@@ -291,6 +291,69 @@ app.get('/api/jobs', async (req, res) => {
   res.json(rows);
 });
 
+
+// ─── Ingest single person (from browser scraper) ──────────────────────────────
+app.post('/api/people/ingest', async (req, res) => {
+  try {
+    const d = req.body;
+    if (!d.full_name && !d.linkedin_url) {
+      return res.status(400).json({ error: 'Need full_name or linkedin_url' });
+    }
+
+    const score = [d.nmls_id, d.email, d.phone, d.company_name, d.full_name, d.linkedin_url]
+      .filter(Boolean).length * 15;
+
+    // Check for existing by linkedin_url
+    if (d.linkedin_url) {
+      const existing = await pool.query(
+        'SELECT id FROM people WHERE linkedin_url = $1', [d.linkedin_url]
+      );
+      if (existing.rows[0]) {
+        await pool.query(`
+          UPDATE people SET
+            headline = COALESCE($1, headline),
+            company_name = COALESCE($2, company_name),
+            source_linkedin = true,
+            updated_at = NOW()
+          WHERE id = $3
+        `, [d.headline || null, d.company_name || null, existing.rows[0].id]);
+        return res.json({ action: 'updated', id: existing.rows[0].id });
+      }
+    }
+
+    const { rows } = await pool.query(`
+      INSERT INTO people (
+        nmls_id, first_name, last_name, full_name,
+        company_name, phone, email, city, state,
+        title, title_category, license_status,
+        linkedin_url, photo_url, headline,
+        source_nmls, source_linkedin, source_web,
+        data_quality_score
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+      ON CONFLICT (nmls_id) DO UPDATE SET
+        linkedin_url = COALESCE(EXCLUDED.linkedin_url, people.linkedin_url),
+        headline     = COALESCE(EXCLUDED.headline, people.headline),
+        source_linkedin = true,
+        updated_at   = NOW()
+      RETURNING id
+    `, [
+      d.nmls_id || null,
+      d.first_name || '', d.last_name || '', d.full_name || '',
+      d.company_name || null, d.phone || null, d.email || null,
+      d.city || null, d.state || null,
+      d.title || 'Loan Officer', d.title_category || 'loan_officer',
+      d.license_status || 'Active',
+      d.linkedin_url || null, d.photo_url || null, d.headline || null,
+      d.source_nmls || false, d.source_linkedin || false, d.source_web || false,
+      Math.min(score, 100)
+    ]);
+
+    res.json({ action: 'inserted', id: rows[0]?.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`\n🚀 MortgageDB API running on port ${PORT}`);
   console.log(`   Health: http://localhost:${PORT}/health`);
