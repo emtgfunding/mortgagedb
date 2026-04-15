@@ -24,8 +24,11 @@ app.use(express.json());
 // Serve static assets (recruiter app lives under /public)
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Recruiter app — /app (and /app/* for future subroutes)
-app.get(['/app', '/app/*'], (req, res) => {
+// Recruiter app — /app (Express 5 uses named wildcards: /app/*splat)
+app.get('/app', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'app.html'));
+});
+app.get('/app/*splat', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'app.html'));
 });
 
