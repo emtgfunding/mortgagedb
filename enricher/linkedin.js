@@ -30,13 +30,30 @@
 require('dotenv').config();
 const axios = require('axios');
 const cheerio = require('cheerio');
+const { execSync } = require('child_process');
+const fs = require('fs');
 const pool = require('../db');
 
 const DELAY        = parseInt(process.env.SCRAPE_DELAY_MS)        || 3000;
 const BATCH_LIMIT  = parseInt(process.env.LINKEDIN_BATCH_LIMIT)   || 500;
 const RETRY_DAYS   = parseInt(process.env.LINKEDIN_RETRY_DAYS)    || 14;
 const MAX_ATTEMPTS = parseInt(process.env.LINKEDIN_MAX_ATTEMPTS)  || 3;
-const CHROME_PATH  = process.env.PUPPETEER_EXECUTABLE_PATH || null;
+
+// Find a Chrome/Chromium binary. Explicit env var wins; otherwise we probe
+// the PATH for common names (Nixpacks installs `chromium` on PATH).
+function detectChromePath() {
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
+  const candidates = ['chromium', 'chromium-browser', 'google-chrome', 'chrome'];
+  for (const name of candidates) {
+    try {
+      const resolved = execSync(`command -v ${name} 2>/dev/null`, { encoding: 'utf8' }).trim();
+      if (resolved && fs.existsSync(resolved)) return resolved;
+    } catch { /* keep looking */ }
+  }
+  return null;
+}
+
+const CHROME_PATH = detectChromePath();
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 

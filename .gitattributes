@@ -1,0 +1,26 @@
+# Normalize line endings on commit — files are stored as LF in the repo and
+# checked out however the OS prefers. Stops the CRLF-vs-LF diff churn when
+# editing on Windows and Linux/CI both touch the tree.
+* text=auto eol=lf
+
+# Always LF for things that must be executed or parsed in UNIX contexts.
+*.sh         text eol=lf
+*.js         text eol=lf
+*.mjs        text eol=lf
+*.cjs        text eol=lf
+*.ts         text eol=lf
+*.json       text eol=lf
+*.sql        text eol=lf
+*.toml       text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+*.md         text eol=lf
+
+# Binary assets — never touch line endings.
+*.png        binary
+*.jpg        binary
+*.jpeg       binary
+*.gif        binary
+*.ico        binary
+*.pdf        binary
+*.xlsx       binary
