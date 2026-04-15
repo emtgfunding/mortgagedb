@@ -372,11 +372,17 @@ function start() {
       });
   }
 
-  app.listen(PORT, () => {
-    console.log(`\n🚀 MortgageDB API running on port ${PORT}`);
-    console.log(`   Health: http://localhost:${PORT}/health`);
-    console.log(`   People: http://localhost:${PORT}/api/people`);
-    console.log(`   Stats:  http://localhost:${PORT}/api/stats\n`);
+  // Bind to 0.0.0.0 explicitly so Railway's edge proxy can reach us on
+  // container network interfaces, not just loopback. Also log whether PORT
+  // came from the env — if you see "(env PORT unset → fallback)" in the
+  // Railway logs, Railway isn't injecting PORT and the domain target port
+  // in service settings must match this number.
+  const portSource = process.env.PORT ? `(env PORT=${process.env.PORT})` : '(env PORT unset → fallback)';
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n🚀 MortgageDB API listening on 0.0.0.0:${PORT} ${portSource}`);
+    console.log(`   Health: /health`);
+    console.log(`   People: /api/people`);
+    console.log(`   Stats:  /api/stats\n`);
   });
 }
 
