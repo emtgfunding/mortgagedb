@@ -15,9 +15,91 @@ const migrate = require('./migrate');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(helmet());
+// Relax helmet's default CSP so the inline dashboard at / can render without extra work.
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors());
 app.use(express.json());
+
+// ─── Landing page / dashboard ─────────────────────────────────────────────────
+app.get('/', async (req, res) => {
+  let stats = null;
+  try {
+    const [{ rows: p }, { rows: c }, { rows: e }, { rows: l }, { rows: st }] = await Promise.all([
+      pool.query('SELECT COUNT(*)::int AS n FROM people'),
+      pool.query('SELECT COUNT(*)::int AS n FROM companies'),
+      pool.query("SELECT COUNT(*)::int AS n FROM people WHERE email IS NOT NULL AND email <> ''"),
+      pool.query("SELECT COUNT(*)::int AS n FROM people WHERE linkedin_url IS NOT NULL AND linkedin_url <> ''"),
+      pool.query("SELECT state, COUNT(*)::int AS n FROM people WHERE state IS NOT NULL GROUP BY state ORDER BY n DESC LIMIT 10")
+    ]);
+    stats = {
+      people: p[0].n,
+      companies: c[0].n,
+      with_email: e[0].n,
+      with_linkedin: l[0].n,
+      by_state: st
+    };
+  } catch (err) {
+    console.error('dashboard stats failed:', err.message);
+  }
+
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  const stateRows = stats && stats.by_state.length
+    ? stats.by_state.map(r => `<tr><td>${esc(r.state)}</td><td style="text-align:right">${r.n.toLocaleString()}</td></tr>`).join('')
+    : '<tr><td colspan="2" style="color:#888">no data</td></tr>';
+
+  res.type('html').send(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MortgageDB</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 860px; margin: 2.5rem auto; padding: 0 1.25rem; }
+  h1 { margin: 0 0 .25rem; font-size: 1.75rem; }
+  .sub { color: #888; margin: 0 0 1.75rem; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .75rem; margin-bottom: 2rem; }
+  .card { border: 1px solid #8884; border-radius: 10px; padding: 1rem; }
+  .card .n { font-size: 1.75rem; font-weight: 600; }
+  .card .k { color: #888; font-size: .85rem; text-transform: uppercase; letter-spacing: .04em; }
+  h2 { font-size: 1.1rem; margin: 1.75rem 0 .5rem; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: .35rem .5rem; border-bottom: 1px solid #8882; }
+  .endpoints a { display: inline-block; margin: .15rem .35rem .15rem 0; padding: .3rem .6rem; border: 1px solid #8884; border-radius: 6px; text-decoration: none; color: inherit; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; }
+  .endpoints a:hover { background: #8881; }
+  footer { margin-top: 2.5rem; color: #888; font-size: .85rem; }
+</style>
+</head>
+<body>
+  <h1>MortgageDB</h1>
+  <p class="sub">NMLS-sourced mortgage industry contact database</p>
+
+  ${stats ? `
+  <div class="cards">
+    <div class="card"><div class="k">People</div><div class="n">${stats.people.toLocaleString()}</div></div>
+    <div class="card"><div class="k">Companies</div><div class="n">${stats.companies.toLocaleString()}</div></div>
+    <div class="card"><div class="k">With Email</div><div class="n">${stats.with_email.toLocaleString()}</div></div>
+    <div class="card"><div class="k">With LinkedIn</div><div class="n">${stats.with_linkedin.toLocaleString()}</div></div>
+  </div>
+
+  <h2>Top states</h2>
+  <table>${stateRows}</table>
+  ` : `<p style="color:#c33">Stats unavailable — check /health for service status.</p>`}
+
+  <h2>API endpoints</h2>
+  <div class="endpoints">
+    <a href="/health">GET /health</a>
+    <a href="/api/stats">GET /api/stats</a>
+    <a href="/api/people?limit=25">GET /api/people</a>
+    <a href="/api/companies?limit=25">GET /api/companies</a>
+    <a href="/api/jobs">GET /api/jobs</a>
+    <a href="/api/export/csv">GET /api/export/csv</a>
+  </div>
+
+  <footer>Deploy: Railway · Source: NMLS Consumer Access · Last updated ${new Date().toISOString()}</footer>
+</body>
+</html>`);
+});
 
 // ─── Health ───────────────────────────────────────────────────────────────────
 app.get('/health', async (req, res) => {
