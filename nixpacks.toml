@@ -1,21 +1,14 @@
 # Nixpacks build config for Railway.
 #
-# We install chromium so enricher/linkedin.js can use puppeteer-core instead
-# of falling back to axios. PUPPETEER_EXECUTABLE_PATH tells puppeteer where
-# the binary lives in the Nix store.
-
-[phases.setup]
-nixPkgs = ["nodejs_20", "chromium"]
+# NOTE: chromium install was removed because it can break nixpacks builds
+# depending on the Nix channel version. The LinkedIn enricher will fall back
+# to axios+cheerio when no Chrome binary is found. To enable puppeteer again
+# later, add "chromium" to nixPkgs below:
+#     [phases.setup]
+#     nixPkgs = ["nodejs_20", "chromium"]
 
 [phases.build]
 cmds = ["npm install"]
 
 [start]
 cmd = "node index.js"
-
-[variables]
-# Nixpacks places nix-provided binaries on PATH as their package name, so the
-# shell can resolve `chromium`. Puppeteer needs an absolute path, though —
-# we resolve it at process start via `which chromium`. Override this var in
-# Railway if you need a specific binary.
-PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "true"

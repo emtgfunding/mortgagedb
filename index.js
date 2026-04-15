@@ -355,17 +355,21 @@ app.post('/api/people/ingest', async (req, res) => {
   }
 });
 
-// Apply schema on boot (idempotent). Set SKIP_MIGRATE=1 to disable — useful
-// if you want to deploy the API independently from schema changes.
-async function start() {
+// Apply schema on boot (idempotent). Fire-and-forget so app.listen() always
+// fires immediately — Railway's health check can't wait 30+ seconds for a
+// potentially slow DDL, and a hung migration shouldn't take the API down.
+// Set SKIP_MIGRATE=1 to disable entirely.
+function start() {
   if (process.env.SKIP_MIGRATE !== '1') {
-    try {
-      await migrate.run();
-    } catch (err) {
-      console.error('⚠️  Schema migration failed — continuing anyway:', err.message);
-      // We don't fatally exit so the /health endpoint can still surface the
-      // error and deploys stay observable, but log loudly.
-    }
+    const timeoutMs = parseInt(process.env.MIGRATE_TIMEOUT_MS) || 60000;
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`migration timed out after ${timeoutMs}ms`)), timeoutMs)
+    );
+    Promise.race([migrate.run(), timeout])
+      .then(() => { /* logged inside migrate */ })
+      .catch((err) => {
+        console.error('⚠️  Schema migration failed — API is still up:', err.message);
+      });
   }
 
   app.listen(PORT, () => {
