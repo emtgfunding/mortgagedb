@@ -4,6 +4,10 @@
   "description": "The only mortgage industry contact database combining NMLS licensing data + LinkedIn enrichment + email verification. A competitor to Apollo + MMI built specifically for the mortgage vertical.",
   "main": "index.js",
   "scripts": {
+    "start": "node index.js",
+    "migrate": "node migrate.js",
+    "enrich:email": "node enricher/email.js",
+    "enrich:linkedin": "node enricher/linkedin.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

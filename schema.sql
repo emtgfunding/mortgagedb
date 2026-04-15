@@ -51,8 +51,18 @@ CREATE TABLE IF NOT EXISTS people (
   created_at            TIMESTAMP DEFAULT NOW(),
   updated_at            TIMESTAMP DEFAULT NOW(),
   nmls_last_synced      TIMESTAMP,
-  linkedin_last_synced  TIMESTAMP
+  linkedin_last_synced  TIMESTAMP,
+  linkedin_attempted_at TIMESTAMP,
+  linkedin_attempts     INTEGER DEFAULT 0,
+  email_attempted_at    TIMESTAMP,
+  email_attempts        INTEGER DEFAULT 0
 );
+
+-- Idempotent ALTERs so existing DBs pick up new columns without recreation
+ALTER TABLE people ADD COLUMN IF NOT EXISTS linkedin_attempted_at TIMESTAMP;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS linkedin_attempts     INTEGER DEFAULT 0;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS email_attempted_at    TIMESTAMP;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS email_attempts        INTEGER DEFAULT 0;
 
 -- STATE LICENSES
 CREATE TABLE IF NOT EXISTS licenses (
@@ -107,6 +117,29 @@ CREATE TABLE IF NOT EXISTS employment_history (
   created_at      TIMESTAMP DEFAULT NOW()
 );
 
+-- COMPANY EMAIL PATTERNS (learned per-domain, reused across employees)
+CREATE TABLE IF NOT EXISTS company_email_patterns (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  domain          VARCHAR(200) UNIQUE NOT NULL,
+  pattern         VARCHAR(100),          -- e.g. "{first}.{last}", "{f}{last}"
+  confidence      INTEGER DEFAULT 0,     -- 0-100, increases with confirmations
+  sample_count    INTEGER DEFAULT 0,     -- how many verified emails produced this pattern
+  is_catch_all    BOOLEAN DEFAULT FALSE, -- domain accepts any recipient (SMTP verify unreliable)
+  catch_all_checked_at TIMESTAMP,
+  last_seen_at    TIMESTAMP DEFAULT NOW(),
+  created_at      TIMESTAMP DEFAULT NOW(),
+  updated_at      TIMESTAMP DEFAULT NOW()
+);
+
+-- DOMAIN MX CACHE (avoid re-resolving MX + store catch-all decision)
+CREATE TABLE IF NOT EXISTS domain_mx_cache (
+  domain          VARCHAR(200) PRIMARY KEY,
+  mx_host         VARCHAR(300),
+  has_mx          BOOLEAN DEFAULT FALSE,
+  is_catch_all    BOOLEAN,               -- NULL = unknown
+  last_checked_at TIMESTAMP DEFAULT NOW()
+);
+
 -- INGEST JOBS
 CREATE TABLE IF NOT EXISTS ingest_jobs (
   id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -138,6 +171,9 @@ CREATE INDEX IF NOT EXISTS idx_companies_state ON companies(state);
 CREATE INDEX IF NOT EXISTS idx_licenses_person ON licenses(person_id);
 CREATE INDEX IF NOT EXISTS idx_licenses_state ON licenses(state);
 CREATE INDEX IF NOT EXISTS idx_ingest_status ON ingest_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_people_linkedin_attempt ON people(linkedin_attempted_at);
+CREATE INDEX IF NOT EXISTS idx_people_email_attempt ON people(email_attempted_at);
+CREATE INDEX IF NOT EXISTS idx_company_email_patterns_domain ON company_email_patterns(domain);
 
 -- AUTO UPDATE TIMESTAMPS
 CREATE OR REPLACE FUNCTION update_updated_at()
@@ -151,4 +187,8 @@ CREATE TRIGGER people_updated_at BEFORE UPDATE ON people
 
 DROP TRIGGER IF EXISTS companies_updated_at ON companies;
 CREATE TRIGGER companies_updated_at BEFORE UPDATE ON companies
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+DROP TRIGGER IF EXISTS company_email_patterns_updated_at ON company_email_patterns;
+CREATE TRIGGER company_email_patterns_updated_at BEFORE UPDATE ON company_email_patterns
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();

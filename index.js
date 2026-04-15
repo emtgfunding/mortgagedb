@@ -10,6 +10,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const pool = require('./db');
+const migrate = require('./migrate');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -354,11 +355,29 @@ app.post('/api/people/ingest', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`\n🚀 MortgageDB API running on port ${PORT}`);
-  console.log(`   Health: http://localhost:${PORT}/health`);
-  console.log(`   People: http://localhost:${PORT}/api/people`);
-  console.log(`   Stats:  http://localhost:${PORT}/api/stats\n`);
-});
+// Apply schema on boot (idempotent). Set SKIP_MIGRATE=1 to disable — useful
+// if you want to deploy the API independently from schema changes.
+async function start() {
+  if (process.env.SKIP_MIGRATE !== '1') {
+    try {
+      await migrate.run();
+    } catch (err) {
+      console.error('⚠️  Schema migration failed — continuing anyway:', err.message);
+      // We don't fatally exit so the /health endpoint can still surface the
+      // error and deploys stay observable, but log loudly.
+    }
+  }
+
+  app.listen(PORT, () => {
+    console.log(`\n🚀 MortgageDB API running on port ${PORT}`);
+    console.log(`   Health: http://localhost:${PORT}/health`);
+    console.log(`   People: http://localhost:${PORT}/api/people`);
+    console.log(`   Stats:  http://localhost:${PORT}/api/stats\n`);
+  });
+}
+
+if (require.main === module) {
+  start();
+}
 
 module.exports = app;
