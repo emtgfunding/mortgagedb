@@ -1,0 +1,693 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MortgageDB — Recruiter</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://cdn.tailwindcss.com"></script>
+<script defer src="https://unpkg.com/alpinejs@3.13.10/dist/cdn.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  html, body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+  body { background: #f8fafc; color: #0f172a; }
+  [x-cloak] { display: none !important; }
+
+  /* Custom scrollbar */
+  .scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+  .scroll-thin::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+  .scroll-thin::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+  .scroll-thin::-webkit-scrollbar-track { background: transparent; }
+
+  /* Table row hover */
+  tbody tr { transition: background-color .06s; }
+
+  /* Drawer slide-in */
+  .drawer-enter { transform: translateX(100%); }
+  .drawer-enter-active { transition: transform .18s ease-out; transform: translateX(0); }
+
+  /* Status chip colors */
+  .chip-new           { background:#e0e7ff; color:#3730a3; }
+  .chip-queued        { background:#fef3c7; color:#92400e; }
+  .chip-contacted     { background:#dbeafe; color:#1e40af; }
+  .chip-replied       { background:#d1fae5; color:#065f46; }
+  .chip-interviewing  { background:#ccfbf1; color:#115e59; }
+  .chip-hired         { background:#bbf7d0; color:#14532d; font-weight:600; }
+  .chip-not_interested{ background:#f1f5f9; color:#475569; }
+  .chip-do_not_contact{ background:#fee2e2; color:#991b1b; }
+
+  .tier-top  { background: linear-gradient(90deg,#fde68a,#fca5a5); color:#7c2d12; }
+  .tier-mid  { background:#e0f2fe; color:#0369a1; }
+  .tier-active { background:#f1f5f9; color:#475569; }
+
+  /* Brand gradient */
+  .brand-grad { background: linear-gradient(135deg, #4f46e5 0%, #0ea5e9 100%); }
+</style>
+</head>
+<body x-data="app()" x-init="init()" x-cloak class="h-screen overflow-hidden">
+
+<div class="flex h-full">
+
+  <!-- ────────── SIDEBAR ────────── -->
+  <aside class="w-72 shrink-0 bg-white border-r border-slate-200 flex flex-col">
+    <div class="px-5 py-4 border-b border-slate-200 flex items-center gap-3">
+      <div class="w-9 h-9 rounded-lg brand-grad flex items-center justify-center text-white font-bold text-sm">M</div>
+      <div>
+        <div class="font-bold text-slate-900">MortgageDB</div>
+        <div class="text-xs text-slate-500" x-text="`${stats.total.toLocaleString()} contacts`"></div>
+      </div>
+    </div>
+
+    <nav class="p-3 space-y-1 flex-1 overflow-y-auto scroll-thin">
+      <button @click="selectView('all')"
+              :class="view==='all' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700 hover:bg-slate-50'"
+              class="w-full flex items-center justify-between px-3 py-2 rounded-md text-sm font-medium">
+        <span class="flex items-center gap-2">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          All contacts
+        </span>
+        <span class="text-xs text-slate-500" x-text="stats.total.toLocaleString()"></span>
+      </button>
+
+      <!-- Outreach pipeline -->
+      <div class="pt-4 pb-1 px-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Pipeline</div>
+      <template x-for="s in pipelineStatuses" :key="s.key">
+        <button @click="selectView('status', s.key)"
+                :class="view==='status' && viewArg===s.key ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700 hover:bg-slate-50'"
+                class="w-full flex items-center justify-between px-3 py-2 rounded-md text-sm">
+          <span class="flex items-center gap-2">
+            <span class="inline-block w-2 h-2 rounded-full" :style="`background:${s.color}`"></span>
+            <span x-text="s.label"></span>
+          </span>
+          <span class="text-xs text-slate-500" x-text="(outreachCounts[s.key] || 0).toLocaleString()"></span>
+        </button>
+      </template>
+
+      <!-- Saved lists -->
+      <div class="pt-4 pb-1 px-3 flex items-center justify-between">
+        <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Lists</div>
+        <button @click="newListModal = true" class="text-slate-400 hover:text-indigo-600" title="New list">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+        </button>
+      </div>
+      <template x-if="lists.length === 0">
+        <div class="px-3 py-4 text-xs text-slate-400 italic">No lists yet. Click + to create one.</div>
+      </template>
+      <template x-for="l in lists" :key="l.id">
+        <button @click="selectView('list', l.id)"
+                :class="view==='list' && viewArg===l.id ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700 hover:bg-slate-50'"
+                class="w-full group flex items-center justify-between px-3 py-2 rounded-md text-sm">
+          <span class="flex items-center gap-2 truncate">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 10h16M4 14h10M4 18h10"/></svg>
+            <span class="truncate" x-text="l.name"></span>
+          </span>
+          <div class="flex items-center gap-1">
+            <span class="text-xs text-slate-500" x-text="l.member_count"></span>
+            <button @click.stop="confirmDeleteList(l)" class="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-600" title="Delete list">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"/></svg>
+            </button>
+          </div>
+        </button>
+      </template>
+    </nav>
+
+    <div class="p-3 border-t border-slate-200 text-[11px] text-slate-400">
+      Data: NMLS Consumer Access
+    </div>
+  </aside>
+
+  <!-- ────────── MAIN ────────── -->
+  <main class="flex-1 flex flex-col overflow-hidden">
+
+    <!-- Top bar -->
+    <div class="bg-white border-b border-slate-200 px-6 py-3 flex items-center gap-3">
+      <div class="relative flex-1 max-w-xl">
+        <svg class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+        <input x-model.debounce.250ms="filters.q" @input="page=1; reload()"
+               placeholder="Search name, company, or NMLS #…"
+               class="w-full pl-9 pr-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-md focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
+      </div>
+
+      <button @click="filterPanel = !filterPanel" class="flex items-center gap-1.5 px-3 py-2 text-sm border border-slate-200 rounded-md hover:bg-slate-50"
+              :class="activeFilterCount > 0 ? 'border-indigo-500 text-indigo-700 bg-indigo-50' : 'text-slate-700'">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"/></svg>
+        Filters
+        <span x-show="activeFilterCount > 0" class="ml-1 px-1.5 py-0.5 text-[10px] bg-indigo-600 text-white rounded-full" x-text="activeFilterCount"></span>
+      </button>
+
+      <select x-model="sort" @change="reload()" class="px-3 py-2 text-sm border border-slate-200 rounded-md bg-white text-slate-700 focus:outline-none focus:border-indigo-500">
+        <option value="quality">Sort: Quality</option>
+        <option value="name">Sort: Name A–Z</option>
+        <option value="volume">Sort: Volume (12mo)</option>
+        <option value="contacted">Sort: Last Contacted</option>
+      </select>
+
+      <div class="flex-1"></div>
+
+      <template x-if="selected.length > 0">
+        <div class="flex items-center gap-2 px-3 py-1.5 bg-indigo-50 rounded-md">
+          <span class="text-sm font-medium text-indigo-700" x-text="`${selected.length} selected`"></span>
+          <button @click="openAddToList()" class="text-xs px-2 py-1 bg-indigo-600 text-white rounded hover:bg-indigo-700">Add to list</button>
+          <button @click="selected = []" class="text-xs text-slate-500 hover:text-slate-900">Clear</button>
+        </div>
+      </template>
+
+      <button @click="exportCsv()" class="flex items-center gap-1.5 px-3 py-2 text-sm bg-slate-900 text-white rounded-md hover:bg-slate-800">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"/></svg>
+        Export CSV
+      </button>
+    </div>
+
+    <!-- Filter panel (collapsible) -->
+    <div x-show="filterPanel" x-transition class="bg-white border-b border-slate-200 px-6 py-4">
+      <div class="grid grid-cols-4 gap-4">
+        <div>
+          <label class="block text-xs font-medium text-slate-500 mb-1">State</label>
+          <select x-model="filters.state" @change="page=1; reload()" class="w-full px-3 py-1.5 text-sm border border-slate-200 rounded-md bg-white">
+            <option value="">All states</option>
+            <template x-for="s in allStates" :key="s">
+              <option :value="s" x-text="s"></option>
+            </template>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-500 mb-1">Title category</label>
+          <select x-model="filters.title_category" @change="page=1; reload()" class="w-full px-3 py-1.5 text-sm border border-slate-200 rounded-md bg-white">
+            <option value="">Any title</option>
+            <option value="loan_officer">Loan Officer</option>
+            <option value="branch_manager">Branch Manager</option>
+            <option value="hr">HR / Recruiting</option>
+            <option value="it">IT</option>
+            <option value="trainer">Trainer</option>
+            <option value="operations">Operations</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-500 mb-1">Production tier</label>
+          <select x-model="filters.production_tier" @change="page=1; reload()" class="w-full px-3 py-1.5 text-sm border border-slate-200 rounded-md bg-white">
+            <option value="">Any tier</option>
+            <option value="top">Top Producer</option>
+            <option value="mid">Mid Tier</option>
+            <option value="active">Active</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-500 mb-1">License</label>
+          <select x-model="filters.license_status" @change="page=1; reload()" class="w-full px-3 py-1.5 text-sm border border-slate-200 rounded-md bg-white">
+            <option value="">Any status</option>
+            <option value="Approved">Approved / Active</option>
+            <option value="Inactive">Inactive</option>
+          </select>
+        </div>
+      </div>
+      <div class="flex gap-4 mt-3">
+        <label class="flex items-center gap-2 text-sm text-slate-700">
+          <input type="checkbox" x-model="filters.has_email" @change="page=1; reload()" class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
+          Has email
+        </label>
+        <label class="flex items-center gap-2 text-sm text-slate-700">
+          <input type="checkbox" x-model="filters.has_phone" @change="page=1; reload()" class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
+          Has phone
+        </label>
+        <label class="flex items-center gap-2 text-sm text-slate-700">
+          <input type="checkbox" x-model="filters.has_linkedin" @change="page=1; reload()" class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
+          Has LinkedIn
+        </label>
+        <label class="flex items-center gap-2 text-sm text-slate-700">
+          <input type="checkbox" x-model="filters.no_regulatory" @change="page=1; reload()" class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
+          No regulatory actions
+        </label>
+        <div class="flex-1"></div>
+        <button @click="resetFilters()" class="text-xs text-slate-500 hover:text-slate-900">Reset filters</button>
+      </div>
+    </div>
+
+    <!-- Active view banner -->
+    <div class="px-6 py-2 bg-slate-50 border-b border-slate-200 flex items-center gap-3 text-sm">
+      <span class="text-slate-500" x-text="viewLabel"></span>
+      <span class="text-slate-400">·</span>
+      <span class="font-semibold text-slate-900" x-text="`${total.toLocaleString()} results`"></span>
+      <div class="flex-1"></div>
+      <div class="flex items-center gap-2 text-xs text-slate-500">
+        <span x-text="`Page ${page} / ${Math.max(1, Math.ceil(total / perPage))}`"></span>
+        <button @click="page > 1 && (page--, reload())" :disabled="page <= 1" class="px-2 py-1 border border-slate-200 rounded disabled:opacity-40 hover:bg-white">←</button>
+        <button @click="page < Math.ceil(total/perPage) && (page++, reload())" :disabled="page >= Math.ceil(total/perPage)" class="px-2 py-1 border border-slate-200 rounded disabled:opacity-40 hover:bg-white">→</button>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div class="flex-1 overflow-auto scroll-thin bg-white">
+      <table class="w-full text-sm">
+        <thead class="sticky top-0 bg-slate-50 border-b border-slate-200 z-10">
+          <tr class="text-left text-xs text-slate-500 uppercase tracking-wider">
+            <th class="px-4 py-2.5 w-8">
+              <input type="checkbox" :checked="allSelected" @change="toggleSelectAll" class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
+            </th>
+            <th class="px-4 py-2.5">Name</th>
+            <th class="px-4 py-2.5">Company</th>
+            <th class="px-4 py-2.5">Location</th>
+            <th class="px-4 py-2.5">Contact</th>
+            <th class="px-4 py-2.5">Volume (12mo)</th>
+            <th class="px-4 py-2.5">Status</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+          <template x-if="loading">
+            <tr><td colspan="7" class="py-20 text-center text-slate-400">Loading…</td></tr>
+          </template>
+          <template x-if="!loading && people.length === 0">
+            <tr><td colspan="7" class="py-20 text-center text-slate-400">No results — try adjusting filters.</td></tr>
+          </template>
+          <template x-for="p in people" :key="p.id">
+            <tr @click="openPerson(p)" class="hover:bg-indigo-50/30 cursor-pointer">
+              <td class="px-4 py-2.5" @click.stop>
+                <input type="checkbox" :value="p.id" x-model="selected" class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
+              </td>
+              <td class="px-4 py-2.5">
+                <div class="flex items-center gap-2">
+                  <div class="w-8 h-8 rounded-full bg-slate-200 text-slate-600 text-xs font-semibold flex items-center justify-center shrink-0" x-text="initials(p.full_name)"></div>
+                  <div class="min-w-0">
+                    <div class="font-medium text-slate-900 truncate" x-text="p.full_name"></div>
+                    <div class="text-xs text-slate-500 flex items-center gap-1.5">
+                      <span x-text="p.title || '—'"></span>
+                      <template x-if="p.production_tier">
+                        <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase"
+                              :class="`tier-${p.production_tier}`"
+                              x-text="p.production_tier"></span>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+              </td>
+              <td class="px-4 py-2.5 text-slate-700">
+                <div class="truncate max-w-[220px]" x-text="p.company_name || '—'"></div>
+                <div class="text-xs text-slate-400" x-text="p.nmls_id ? `NMLS ${p.nmls_id}` : ''"></div>
+              </td>
+              <td class="px-4 py-2.5 text-slate-700">
+                <span x-text="[p.city, p.state].filter(Boolean).join(', ')"></span>
+              </td>
+              <td class="px-4 py-2.5">
+                <div class="flex items-center gap-2 text-slate-600">
+                  <span :class="p.phone ? 'text-slate-700' : 'text-slate-300'" :title="p.phone || 'no phone'">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.95.68l1.5 4.49a1 1 0 01-.5 1.21l-2.26 1.13a11 11 0 005.52 5.52l1.13-2.26a1 1 0 011.21-.5l4.49 1.5a1 1 0 01.68.95V19a2 2 0 01-2 2h-1C9.72 21 3 14.28 3 6V5z"/></svg>
+                  </span>
+                  <span :class="(p.email || p.verified_email) ? 'text-slate-700' : 'text-slate-300'" :title="p.verified_email || p.email || 'no email'">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l9 6 9-6M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                  </span>
+                  <span :class="p.linkedin_url ? 'text-slate-700' : 'text-slate-300'" :title="p.linkedin_url || 'no linkedin'">
+                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M20.45 20.45h-3.55v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.35V9h3.41v1.56h.05a3.74 3.74 0 013.36-1.85c3.6 0 4.27 2.37 4.27 5.45v6.29zM5.34 7.43a2.06 2.06 0 110-4.12 2.06 2.06 0 010 4.12zM7.12 20.45H3.56V9h3.56v11.45zM22.23 0H1.77C.79 0 0 .77 0 1.72v20.56C0 23.23.79 24 1.77 24h20.46c.98 0 1.77-.77 1.77-1.72V1.72C24 .77 23.21 0 22.23 0z"/></svg>
+                  </span>
+                </div>
+              </td>
+              <td class="px-4 py-2.5 text-slate-700 text-xs" x-text="fmtMoney(p.vol_12mo_usd)"></td>
+              <td class="px-4 py-2.5">
+                <span class="inline-block px-2 py-0.5 rounded-full text-[11px] font-medium"
+                      :class="`chip-${p.outreach_status || 'new'}`"
+                      x-text="statusLabel(p.outreach_status || 'new')"></span>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+
+  </main>
+
+  <!-- ────────── DETAIL DRAWER ────────── -->
+  <div x-show="drawer.open" x-transition.opacity class="fixed inset-0 bg-slate-900/30 z-40" @click="drawer.open = false"></div>
+  <div x-show="drawer.open" x-transition:enter="transition ease-out duration-200"
+       x-transition:enter-start="translate-x-full" x-transition:enter-end="translate-x-0"
+       x-transition:leave="transition ease-in duration-150"
+       x-transition:leave-start="translate-x-0" x-transition:leave-end="translate-x-full"
+       class="fixed right-0 top-0 bottom-0 w-[460px] bg-white shadow-2xl border-l border-slate-200 z-50 flex flex-col">
+    <template x-if="drawer.person">
+      <div class="flex flex-col h-full">
+        <!-- Drawer header -->
+        <div class="px-6 py-5 border-b border-slate-200">
+          <div class="flex items-start justify-between">
+            <div class="flex items-center gap-3">
+              <div class="w-12 h-12 rounded-full bg-slate-200 text-slate-600 font-semibold flex items-center justify-center" x-text="initials(drawer.person.full_name)"></div>
+              <div>
+                <div class="font-bold text-slate-900 text-lg" x-text="drawer.person.full_name"></div>
+                <div class="text-sm text-slate-500" x-text="drawer.person.title || '—'"></div>
+              </div>
+            </div>
+            <button @click="drawer.open = false" class="text-slate-400 hover:text-slate-900">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Drawer body -->
+        <div class="flex-1 overflow-y-auto scroll-thin px-6 py-5 space-y-6">
+          <!-- Contact info -->
+          <div>
+            <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Contact</div>
+            <dl class="space-y-2 text-sm">
+              <template x-if="drawer.person.phone">
+                <div class="flex items-center gap-2">
+                  <span class="text-slate-400 w-16">Phone</span>
+                  <a :href="`tel:${drawer.person.phone}`" class="text-indigo-600 hover:underline" x-text="drawer.person.phone"></a>
+                  <button @click="copy(drawer.person.phone)" class="ml-auto text-xs text-slate-400 hover:text-slate-900">Copy</button>
+                </div>
+              </template>
+              <template x-if="drawer.person.verified_email || drawer.person.email">
+                <div class="flex items-center gap-2">
+                  <span class="text-slate-400 w-16">Email</span>
+                  <a :href="`mailto:${drawer.person.verified_email || drawer.person.email}`" class="text-indigo-600 hover:underline truncate" x-text="drawer.person.verified_email || drawer.person.email"></a>
+                  <button @click="copy(drawer.person.verified_email || drawer.person.email)" class="ml-auto text-xs text-slate-400 hover:text-slate-900">Copy</button>
+                </div>
+              </template>
+              <template x-if="drawer.person.linkedin_url">
+                <div class="flex items-center gap-2">
+                  <span class="text-slate-400 w-16">LinkedIn</span>
+                  <a :href="drawer.person.linkedin_url" target="_blank" class="text-indigo-600 hover:underline truncate">Open profile ↗</a>
+                </div>
+              </template>
+              <template x-if="!drawer.person.phone && !drawer.person.email && !drawer.person.verified_email && !drawer.person.linkedin_url">
+                <div class="text-slate-400 italic">No contact info yet.</div>
+              </template>
+            </dl>
+          </div>
+
+          <!-- NMLS / license -->
+          <div>
+            <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Licensing</div>
+            <dl class="space-y-1 text-sm text-slate-700">
+              <div class="flex"><dt class="w-28 text-slate-400">NMLS</dt><dd x-text="drawer.person.nmls_id || '—'"></dd></div>
+              <div class="flex"><dt class="w-28 text-slate-400">Status</dt><dd x-text="drawer.person.license_status || '—'"></dd></div>
+              <div class="flex"><dt class="w-28 text-slate-400">Company</dt><dd class="truncate" x-text="drawer.person.company_name || '—'"></dd></div>
+              <div class="flex"><dt class="w-28 text-slate-400">Location</dt><dd x-text="[drawer.person.city, drawer.person.state, drawer.person.zip].filter(Boolean).join(', ') || '—'"></dd></div>
+              <template x-if="drawer.person.licensed_states && drawer.person.licensed_states.length">
+                <div class="flex">
+                  <dt class="w-28 text-slate-400">Licensed in</dt>
+                  <dd class="flex flex-wrap gap-1">
+                    <template x-for="s in drawer.person.licensed_states" :key="s">
+                      <span class="px-1.5 py-0.5 text-[10px] font-semibold bg-slate-100 text-slate-700 rounded" x-text="s"></span>
+                    </template>
+                  </dd>
+                </div>
+              </template>
+              <template x-if="drawer.person.regulatory_actions">
+                <div class="flex items-center gap-2 mt-1 text-red-600 text-xs">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+                  Regulatory actions on file
+                </div>
+              </template>
+            </dl>
+          </div>
+
+          <!-- Production -->
+          <template x-if="drawer.person.production_tier || drawer.person.vol_12mo_usd">
+            <div>
+              <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Production</div>
+              <div class="grid grid-cols-2 gap-3">
+                <div class="p-3 rounded-lg bg-slate-50">
+                  <div class="text-[10px] text-slate-500 uppercase">12mo Volume</div>
+                  <div class="font-bold text-slate-900" x-text="fmtMoney(drawer.person.vol_12mo_usd)"></div>
+                </div>
+                <div class="p-3 rounded-lg bg-slate-50">
+                  <div class="text-[10px] text-slate-500 uppercase">12mo Units</div>
+                  <div class="font-bold text-slate-900" x-text="drawer.person.vol_12mo_units || '—'"></div>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- Outreach editor -->
+          <div class="border-t border-slate-200 pt-5">
+            <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Outreach</div>
+            <div class="space-y-3">
+              <div>
+                <label class="block text-xs text-slate-500 mb-1">Status</label>
+                <select x-model="drawer.outreach.status" class="w-full px-3 py-2 text-sm border border-slate-200 rounded-md bg-white">
+                  <template x-for="s in pipelineStatuses" :key="s.key">
+                    <option :value="s.key" x-text="s.label"></option>
+                  </template>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs text-slate-500 mb-1">Note</label>
+                <textarea x-model="drawer.outreach.note" rows="3" placeholder="What happened on the last contact?" class="w-full px-3 py-2 text-sm border border-slate-200 rounded-md focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"></textarea>
+              </div>
+              <div class="flex items-center gap-2">
+                <button @click="saveOutreach(false)" class="px-3 py-1.5 text-sm bg-slate-900 text-white rounded-md hover:bg-slate-800">Save</button>
+                <button @click="saveOutreach(true)" class="px-3 py-1.5 text-sm border border-slate-200 rounded-md hover:bg-slate-50">Save + mark contacted</button>
+                <template x-if="drawer.person.last_contacted_at">
+                  <span class="text-xs text-slate-500 ml-auto" x-text="`Last: ${fmtDate(drawer.person.last_contacted_at)}`"></span>
+                </template>
+              </div>
+            </div>
+          </div>
+
+          <!-- Add to list -->
+          <div class="border-t border-slate-200 pt-5">
+            <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Lists</div>
+            <template x-if="lists.length === 0">
+              <div class="text-sm text-slate-400 italic">Create a list from the sidebar to start adding people.</div>
+            </template>
+            <div class="flex flex-wrap gap-2">
+              <template x-for="l in lists" :key="l.id">
+                <button @click="addToList(l.id, [drawer.person.id])"
+                        class="px-2.5 py-1 text-xs border border-slate-200 rounded-full hover:border-indigo-500 hover:text-indigo-700">
+                  + <span x-text="l.name"></span>
+                </button>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+  </div>
+
+  <!-- ────────── NEW LIST MODAL ────────── -->
+  <div x-show="newListModal" x-transition.opacity class="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center" @click.self="newListModal = false">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6">
+      <div class="font-bold text-lg mb-1">New list</div>
+      <div class="text-sm text-slate-500 mb-4">Group contacts you want to track or hand off together.</div>
+      <label class="block text-xs font-medium text-slate-500 mb-1">Name</label>
+      <input x-model="newList.name" placeholder="e.g. CT top producers Q2" class="w-full px-3 py-2 text-sm border border-slate-200 rounded-md mb-3 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500" @keydown.enter="createList()">
+      <label class="block text-xs font-medium text-slate-500 mb-1">Description (optional)</label>
+      <textarea x-model="newList.description" rows="2" class="w-full px-3 py-2 text-sm border border-slate-200 rounded-md mb-4"></textarea>
+      <div class="flex justify-end gap-2">
+        <button @click="newListModal = false" class="px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 rounded">Cancel</button>
+        <button @click="createList()" class="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ────────── ADD TO LIST PICKER ────────── -->
+  <div x-show="addToListPicker" x-transition.opacity class="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center" @click.self="addToListPicker = false">
+    <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6">
+      <div class="font-bold text-lg mb-1">Add <span x-text="selected.length"></span> to list</div>
+      <div class="text-sm text-slate-500 mb-4">Pick a destination list.</div>
+      <div class="max-h-64 overflow-y-auto scroll-thin space-y-1 mb-3">
+        <template x-if="lists.length === 0">
+          <div class="text-sm text-slate-400 italic py-4 text-center">No lists yet — create one from the sidebar.</div>
+        </template>
+        <template x-for="l in lists" :key="l.id">
+          <button @click="addToList(l.id, selected); addToListPicker = false; selected = []"
+                  class="w-full text-left px-3 py-2 rounded hover:bg-indigo-50 flex items-center justify-between">
+            <span x-text="l.name"></span>
+            <span class="text-xs text-slate-400" x-text="`${l.member_count}`"></span>
+          </button>
+        </template>
+      </div>
+      <div class="flex justify-end">
+        <button @click="addToListPicker = false" class="px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100 rounded">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ────────── TOAST ────────── -->
+  <div x-show="toast.msg" x-transition class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-4 py-2 rounded-lg shadow-lg text-sm" x-text="toast.msg"></div>
+
+</div>
+
+<script>
+function app() {
+  return {
+    // data
+    people: [], total: 0, loading: true, stats: { total: 0 },
+    lists: [], outreachCounts: {},
+    allStates: ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC'],
+
+    // state
+    view: 'all', viewArg: null,
+    page: 1, perPage: 50, sort: 'quality',
+    filters: { q: '', state: '', title_category: '', license_status: '', production_tier: '', has_email: false, has_phone: false, has_linkedin: false, no_regulatory: false },
+    selected: [], filterPanel: false,
+    drawer: { open: false, person: null, outreach: { status: 'new', note: '' } },
+    newListModal: false, newList: { name: '', description: '' },
+    addToListPicker: false, toast: { msg: '' },
+
+    pipelineStatuses: [
+      { key: 'new',             label: 'New',            color: '#6366f1' },
+      { key: 'queued',          label: 'Queued',         color: '#f59e0b' },
+      { key: 'contacted',       label: 'Contacted',      color: '#3b82f6' },
+      { key: 'replied',         label: 'Replied',        color: '#10b981' },
+      { key: 'interviewing',    label: 'Interviewing',   color: '#14b8a6' },
+      { key: 'hired',           label: 'Hired',          color: '#16a34a' },
+      { key: 'not_interested',  label: 'Not interested', color: '#64748b' },
+      { key: 'do_not_contact',  label: 'Do not contact', color: '#ef4444' }
+    ],
+
+    get activeFilterCount() {
+      const f = this.filters;
+      return ['state','title_category','license_status','production_tier'].filter(k => f[k]).length
+        + ['has_email','has_phone','has_linkedin','no_regulatory'].filter(k => f[k]).length;
+    },
+    get allSelected() { return this.people.length > 0 && this.people.every(p => this.selected.includes(p.id)); },
+    get viewLabel() {
+      if (this.view === 'all') return 'All contacts';
+      if (this.view === 'status') return `Pipeline · ${this.statusLabel(this.viewArg)}`;
+      if (this.view === 'list') {
+        const l = this.lists.find(x => x.id === this.viewArg);
+        return l ? `List · ${l.name}` : 'List';
+      }
+      return '';
+    },
+
+    async init() {
+      await Promise.all([this.loadLists(), this.loadOutreachCounts(), this.loadStats()]);
+      await this.reload();
+    },
+
+    async loadStats() {
+      try { const r = await fetch('/api/stats').then(r => r.json()); this.stats.total = r.total_people || 0; } catch {}
+    },
+    async loadLists() {
+      try { const r = await fetch('/api/lists').then(r => r.json()); this.lists = r.results || []; } catch {}
+    },
+    async loadOutreachCounts() {
+      try {
+        const r = await fetch('/api/outreach/summary').then(r => r.json());
+        this.outreachCounts = Object.fromEntries((r.by_status || []).map(s => [s.status, s.n]));
+      } catch {}
+    },
+
+    selectView(view, arg = null) {
+      this.view = view; this.viewArg = arg; this.page = 1; this.selected = [];
+      this.reload();
+    },
+
+    buildQuery() {
+      const p = new URLSearchParams();
+      p.set('page', this.page); p.set('per_page', this.perPage); p.set('sort', this.sort);
+      const f = this.filters;
+      if (f.q) p.set('q', f.q);
+      if (f.state) p.set('state', f.state);
+      if (f.title_category) p.set('title_category', f.title_category);
+      if (f.license_status) p.set('license_status', f.license_status);
+      if (f.production_tier) p.set('production_tier', f.production_tier);
+      if (f.has_email) p.set('has_email', 'true');
+      if (f.has_phone) p.set('has_phone', 'true');
+      if (f.has_linkedin) p.set('has_linkedin', 'true');
+      if (this.view === 'status' && this.viewArg) p.set('outreach_status', this.viewArg);
+      if (this.view === 'list' && this.viewArg) p.set('list_id', this.viewArg);
+      return p;
+    },
+
+    async reload() {
+      this.loading = true;
+      try {
+        const r = await fetch('/api/people?' + this.buildQuery().toString()).then(r => r.json());
+        let people = r.results || [];
+        if (this.filters.no_regulatory) people = people.filter(p => !p.regulatory_actions);
+        this.people = people; this.total = r.total || 0;
+      } catch (err) { this.toastMsg('Search failed: ' + err.message); }
+      this.loading = false;
+    },
+
+    resetFilters() {
+      this.filters = { q: '', state: '', title_category: '', license_status: '', production_tier: '', has_email: false, has_phone: false, has_linkedin: false, no_regulatory: false };
+      this.page = 1; this.reload();
+    },
+
+    toggleSelectAll() {
+      if (this.allSelected) this.selected = this.selected.filter(id => !this.people.find(p => p.id === id));
+      else this.selected = [...new Set([...this.selected, ...this.people.map(p => p.id)])];
+    },
+
+    async openPerson(p) {
+      this.drawer.person = p;
+      this.drawer.outreach = { status: p.outreach_status || 'new', note: p.outreach_note || '' };
+      this.drawer.open = true;
+      // Fetch full detail (licenses, employment)
+      try {
+        const full = await fetch(`/api/people/${p.id}`).then(r => r.json());
+        this.drawer.person = { ...p, ...full };
+      } catch {}
+    },
+
+    async saveOutreach(markContacted) {
+      if (!this.drawer.person) return;
+      try {
+        const r = await fetch(`/api/people/${this.drawer.person.id}/outreach`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: this.drawer.outreach.status, note: this.drawer.outreach.note, mark_contacted: markContacted })
+        }).then(r => r.json());
+        this.drawer.person.outreach_status = r.status;
+        this.drawer.person.last_contacted_at = r.last_contacted_at;
+        // Update row in table
+        const idx = this.people.findIndex(p => p.id === this.drawer.person.id);
+        if (idx >= 0) { this.people[idx].outreach_status = r.status; this.people[idx].last_contacted_at = r.last_contacted_at; }
+        this.toastMsg('Outreach saved');
+        this.loadOutreachCounts();
+      } catch (err) { this.toastMsg('Save failed: ' + err.message); }
+    },
+
+    async createList() {
+      if (!this.newList.name.trim()) return this.toastMsg('Name required');
+      try {
+        await fetch('/api/lists', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.newList)
+        }).then(r => r.json());
+        this.newListModal = false; this.newList = { name: '', description: '' };
+        await this.loadLists(); this.toastMsg('List created');
+      } catch (err) { this.toastMsg('Create failed: ' + err.message); }
+    },
+
+    async confirmDeleteList(l) {
+      if (!confirm(`Delete list "${l.name}"? Contacts stay in the database — only the list is removed.`)) return;
+      try {
+        await fetch(`/api/lists/${l.id}`, { method: 'DELETE' });
+        if (this.view === 'list' && this.viewArg === l.id) this.selectView('all');
+        await this.loadLists(); this.toastMsg('List deleted');
+      } catch (err) { this.toastMsg('Delete failed: ' + err.message); }
+    },
+
+    openAddToList() {
+      if (this.lists.length === 0) { this.newListModal = true; return; }
+      this.addToListPicker = true;
+    },
+
+    async addToList(listId, personIds) {
+      try {
+        const r = await fetch(`/api/lists/${listId}/members`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ person_ids: personIds })
+        }).then(r => r.json());
+        await this.loadLists();
+        this.toastMsg(`Added ${r.added} to list`);
+      } catch (err) { this.toastMsg('Add failed: ' + err.message); }
+    },
+
+    async exportCsv() {
+      const p = this.buildQuery();
+      p.delete('page'); p.delete('per_page'); p.delete('sort');
+      const url = '/api/export/csv?' + p.toString();
+      window.location = url;
+    },
+
+    initials(n) { if (!n) return '?'; return n.split(' ').filter(Boolean).slice(0, 2).map(s => s[0]).join('').toUpperCase(); },
+    fmtMoney(v) { if (v == null) return '—'; const n = Number(v); if (n >= 1e9) return '$' + (n/1e9).toFixed(1) + 'B'; if (n >= 1e6) return '$' + (n/1e6).toFixed(1) + 'M'; if (n >= 1e3) return '$' + (n/1e3).toFixed(0) + 'K'; return '$' + n; },
+    fmtDate(d) { if (!d) return '—'; const dt = new Date(d); return dt.toLocaleDateString(); },
+    statusLabel(k) { return (this.pipelineStatuses.find(s => s.key === k) || { label: k }).label; },
+    copy(t) { navigator.clipboard.writeText(t); this.toastMsg('Copied'); },
+    toastMsg(m) { this.toast.msg = m; setTimeout(() => this.toast.msg = '', 1800); }
+  };
+}
+</script>
+</body>
+</html>

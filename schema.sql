@@ -140,6 +140,33 @@ CREATE TABLE IF NOT EXISTS domain_mx_cache (
   last_checked_at TIMESTAMP DEFAULT NOW()
 );
 
+-- SAVED LISTS (recruiter-curated segments)
+CREATE TABLE IF NOT EXISTS saved_lists (
+  id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  name          VARCHAR(200) NOT NULL,
+  description   TEXT,
+  color         VARCHAR(20),
+  created_at    TIMESTAMP DEFAULT NOW(),
+  updated_at    TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS saved_list_members (
+  list_id       UUID REFERENCES saved_lists(id) ON DELETE CASCADE,
+  person_id     UUID REFERENCES people(id) ON DELETE CASCADE,
+  added_at      TIMESTAMP DEFAULT NOW(),
+  PRIMARY KEY (list_id, person_id)
+);
+
+-- OUTREACH TRACKING (one row per person, upserted on edit)
+-- status values: new | queued | contacted | replied | interviewing | hired | not_interested | do_not_contact
+CREATE TABLE IF NOT EXISTS outreach (
+  person_id     UUID PRIMARY KEY REFERENCES people(id) ON DELETE CASCADE,
+  status        VARCHAR(40) DEFAULT 'new',
+  note          TEXT,
+  last_contacted_at TIMESTAMP,
+  updated_at    TIMESTAMP DEFAULT NOW()
+);
+
 -- INGEST JOBS
 CREATE TABLE IF NOT EXISTS ingest_jobs (
   id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -174,6 +201,9 @@ CREATE INDEX IF NOT EXISTS idx_ingest_status ON ingest_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_people_linkedin_attempt ON people(linkedin_attempted_at);
 CREATE INDEX IF NOT EXISTS idx_people_email_attempt ON people(email_attempted_at);
 CREATE INDEX IF NOT EXISTS idx_company_email_patterns_domain ON company_email_patterns(domain);
+CREATE INDEX IF NOT EXISTS idx_saved_list_members_person ON saved_list_members(person_id);
+CREATE INDEX IF NOT EXISTS idx_outreach_status ON outreach(status);
+CREATE INDEX IF NOT EXISTS idx_outreach_last_contacted ON outreach(last_contacted_at DESC);
 
 -- AUTO UPDATE TIMESTAMPS
 CREATE OR REPLACE FUNCTION update_updated_at()
@@ -191,4 +221,12 @@ CREATE TRIGGER companies_updated_at BEFORE UPDATE ON companies
 
 DROP TRIGGER IF EXISTS company_email_patterns_updated_at ON company_email_patterns;
 CREATE TRIGGER company_email_patterns_updated_at BEFORE UPDATE ON company_email_patterns
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+DROP TRIGGER IF EXISTS saved_lists_updated_at ON saved_lists;
+CREATE TRIGGER saved_lists_updated_at BEFORE UPDATE ON saved_lists
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+DROP TRIGGER IF EXISTS outreach_updated_at ON outreach;
+CREATE TRIGGER outreach_updated_at BEFORE UPDATE ON outreach
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();

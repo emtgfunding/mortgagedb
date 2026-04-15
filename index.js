@@ -6,6 +6,7 @@
  */
 
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -19,6 +20,14 @@ const PORT = process.env.PORT || 3000;
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors());
 app.use(express.json());
+
+// Serve static assets (recruiter app lives under /public)
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Recruiter app — /app (and /app/* for future subroutes)
+app.get(['/app', '/app/*'], (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'app.html'));
+});
 
 // ─── Landing page / dashboard ─────────────────────────────────────────────────
 app.get('/', async (req, res) => {
@@ -73,6 +82,12 @@ app.get('/', async (req, res) => {
 <body>
   <h1>MortgageDB</h1>
   <p class="sub">NMLS-sourced mortgage industry contact database</p>
+
+  <p style="margin:1rem 0 2rem">
+    <a href="/app" style="display:inline-block; padding:.6rem 1rem; background:linear-gradient(135deg,#4f46e5,#0ea5e9); color:white; text-decoration:none; border-radius:8px; font-weight:600">
+      Open Recruiter App →
+    </a>
+  </p>
 
   ${stats ? `
   <div class="cards">
@@ -154,6 +169,9 @@ app.get('/api/people', async (req, res) => {
       nmls_id,              // exact NMLS ID
       company,              // company name search
       production_tier,      // top, mid, active
+      list_id,              // filter to members of a saved list
+      outreach_status,      // filter by outreach status (comma-separated ok)
+      sort = 'quality',     // quality | name | volume | contacted
       page = 1,
       per_page = 25
     } = req.query;
@@ -220,13 +238,33 @@ app.get('/api/people', async (req, res) => {
       params.push(production_tier);
     }
 
+    if (list_id) {
+      conditions.push(`p.id IN (SELECT person_id FROM saved_list_members WHERE list_id = $${p++})`);
+      params.push(list_id);
+    }
+
+    if (outreach_status) {
+      const statuses = String(outreach_status).split(',').map(s => s.trim()).filter(Boolean);
+      if (statuses.length) {
+        conditions.push(`COALESCE(o.status, 'new') = ANY($${p++})`);
+        params.push(statuses);
+      }
+    }
+
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const offset = (parseInt(page) - 1) * parseInt(per_page);
     const limit  = Math.min(parseInt(per_page), 100);
 
+    const orderBy = {
+      quality:   'p.data_quality_score DESC, p.full_name ASC',
+      name:      'p.full_name ASC',
+      volume:    'p.vol_12mo_usd DESC NULLS LAST, p.full_name ASC',
+      contacted: 'o.last_contacted_at DESC NULLS LAST, p.full_name ASC'
+    }[sort] || 'p.data_quality_score DESC, p.full_name ASC';
+
     const [results, countResult] = await Promise.all([
       pool.query(`
-        SELECT 
+        SELECT
           p.id, p.nmls_id, p.first_name, p.last_name, p.full_name,
           p.title, p.title_category,
           p.company_name, p.company_nmls_id,
@@ -238,18 +276,26 @@ app.get('/api/people', async (req, res) => {
           p.data_quality_score,
           p.source_nmls, p.source_linkedin,
           p.created_at,
+          COALESCE(o.status, 'new') as outreach_status,
+          o.note                    as outreach_note,
+          o.last_contacted_at,
           -- Aggregate licensed states
           ARRAY(
-            SELECT l.state FROM licenses l 
+            SELECT l.state FROM licenses l
             WHERE l.person_id = p.id AND l.status ILIKE '%approv%'
             ORDER BY l.state
           ) as licensed_states
         FROM people p
+        LEFT JOIN outreach o ON o.person_id = p.id
         ${where}
-        ORDER BY p.data_quality_score DESC, p.full_name ASC
+        ORDER BY ${orderBy}
         LIMIT ${limit} OFFSET ${offset}
       `, params),
-      pool.query(`SELECT COUNT(*) FROM people p ${where}`, params)
+      pool.query(`
+        SELECT COUNT(*) FROM people p
+        LEFT JOIN outreach o ON o.person_id = p.id
+        ${where}
+      `, params)
     ]);
 
     res.json({
@@ -321,31 +367,59 @@ app.get('/api/companies', async (req, res) => {
 // ─── CSV Export ───────────────────────────────────────────────────────────────
 app.get('/api/export/csv', async (req, res) => {
   try {
-    // Reuse same filter logic as /api/people but no pagination
-    const { state, states, title_category, has_email, company } = req.query;
+    // Mirror /api/people filter logic so the UI's "Export" matches the on-screen view.
+    const {
+      q, state, states, title_category, license_status,
+      has_email, has_phone, has_linkedin, company, production_tier,
+      list_id, outreach_status
+    } = req.query;
+
     const conditions = [];
     const params = [];
     let p = 1;
 
-    if (state) { conditions.push(`state = $${p++}`); params.push(state.toUpperCase()); }
-    if (states) { 
-      conditions.push(`state = ANY($${p++})`); 
-      params.push(states.split(',').map(s=>s.trim().toUpperCase())); 
+    if (q) {
+      conditions.push(`(p.full_name ILIKE $${p} OR p.company_name ILIKE $${p} OR p.nmls_id = $${p+1})`);
+      params.push(`%${q}%`, q); p += 2;
     }
-    if (title_category) { conditions.push(`title_category = $${p++}`); params.push(title_category); }
-    if (has_email === 'true') { conditions.push(`(email IS NOT NULL OR verified_email IS NOT NULL)`); }
-    if (company) { conditions.push(`company_name ILIKE $${p++}`); params.push(`%${company}%`); }
+    if (state) { conditions.push(`p.state = $${p++}`); params.push(state.toUpperCase()); }
+    if (states) {
+      conditions.push(`p.state = ANY($${p++})`);
+      params.push(states.split(',').map(s=>s.trim().toUpperCase()));
+    }
+    if (title_category)   { conditions.push(`p.title_category = $${p++}`); params.push(title_category); }
+    if (license_status)   { conditions.push(`p.license_status ILIKE $${p++}`); params.push(`%${license_status}%`); }
+    if (has_email === 'true')    conditions.push(`(p.email IS NOT NULL OR p.verified_email IS NOT NULL)`);
+    if (has_phone === 'true')    conditions.push(`p.phone IS NOT NULL`);
+    if (has_linkedin === 'true') conditions.push(`p.linkedin_url IS NOT NULL`);
+    if (company)          { conditions.push(`p.company_name ILIKE $${p++}`); params.push(`%${company}%`); }
+    if (production_tier)  { conditions.push(`p.production_tier = $${p++}`); params.push(production_tier); }
+    if (list_id) {
+      conditions.push(`p.id IN (SELECT person_id FROM saved_list_members WHERE list_id = $${p++})`);
+      params.push(list_id);
+    }
+    if (outreach_status) {
+      const statuses = String(outreach_status).split(',').map(s => s.trim()).filter(Boolean);
+      if (statuses.length) {
+        conditions.push(`COALESCE(o.status, 'new') = ANY($${p++})`);
+        params.push(statuses);
+      }
+    }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const { rows } = await pool.query(`
-      SELECT nmls_id, full_name, first_name, last_name, title, company_name,
-             phone, COALESCE(verified_email, email) as email,
-             city, state, zip, license_status, regulatory_actions,
-             linkedin_url, production_tier, vol_12mo_usd, vol_12mo_units,
-             data_quality_score
-      FROM people ${where}
-      ORDER BY data_quality_score DESC
+      SELECT p.nmls_id, p.full_name, p.first_name, p.last_name, p.title, p.company_name,
+             p.phone, COALESCE(p.verified_email, p.email) as email,
+             p.city, p.state, p.zip, p.license_status, p.regulatory_actions,
+             p.linkedin_url, p.production_tier, p.vol_12mo_usd, p.vol_12mo_units,
+             p.data_quality_score,
+             COALESCE(o.status, 'new') as outreach_status,
+             o.last_contacted_at
+      FROM people p
+      LEFT JOIN outreach o ON o.person_id = p.id
+      ${where}
+      ORDER BY p.data_quality_score DESC
       LIMIT 10000
     `, params);
 
@@ -374,6 +448,140 @@ app.get('/api/jobs', async (req, res) => {
   res.json(rows);
 });
 
+
+// ─── Saved Lists ──────────────────────────────────────────────────────────────
+app.get('/api/lists', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT l.id, l.name, l.description, l.color, l.created_at, l.updated_at,
+        (SELECT COUNT(*) FROM saved_list_members m WHERE m.list_id = l.id) AS member_count
+      FROM saved_lists l
+      ORDER BY l.updated_at DESC
+    `);
+    res.json({ results: rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/lists', async (req, res) => {
+  try {
+    const { name, description, color } = req.body || {};
+    if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
+    const { rows } = await pool.query(`
+      INSERT INTO saved_lists (name, description, color)
+      VALUES ($1, $2, $3)
+      RETURNING id, name, description, color, created_at, updated_at
+    `, [String(name).trim().slice(0, 200), description || null, color || null]);
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/lists/:id', async (req, res) => {
+  try {
+    const { rows: list } = await pool.query('SELECT * FROM saved_lists WHERE id = $1', [req.params.id]);
+    if (!list[0]) return res.status(404).json({ error: 'not found' });
+    const { rows: members } = await pool.query(`
+      SELECT p.id, p.full_name, p.company_name, p.state, p.phone,
+             COALESCE(p.verified_email, p.email) as email,
+             p.linkedin_url, p.production_tier,
+             COALESCE(o.status, 'new') as outreach_status
+      FROM saved_list_members m
+      JOIN people p ON p.id = m.person_id
+      LEFT JOIN outreach o ON o.person_id = p.id
+      WHERE m.list_id = $1
+      ORDER BY m.added_at DESC
+    `, [req.params.id]);
+    res.json({ ...list[0], members });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/api/lists/:id', async (req, res) => {
+  try {
+    const { name, description, color } = req.body || {};
+    const { rows } = await pool.query(`
+      UPDATE saved_lists SET
+        name        = COALESCE($1, name),
+        description = COALESCE($2, description),
+        color       = COALESCE($3, color)
+      WHERE id = $4
+      RETURNING *
+    `, [name || null, description || null, color || null, req.params.id]);
+    if (!rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/lists/:id', async (req, res) => {
+  try {
+    const result = await pool.query('DELETE FROM saved_lists WHERE id = $1', [req.params.id]);
+    res.json({ deleted: result.rowCount });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Bulk add members. Body: { person_ids: [uuid, ...] }
+app.post('/api/lists/:id/members', async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.person_ids) ? req.body.person_ids : [];
+    if (!ids.length) return res.json({ added: 0 });
+    const values = ids.map((_, i) => `($1, $${i + 2})`).join(',');
+    const { rowCount } = await pool.query(
+      `INSERT INTO saved_list_members (list_id, person_id) VALUES ${values}
+       ON CONFLICT DO NOTHING`,
+      [req.params.id, ...ids]
+    );
+    // Touch list updated_at
+    await pool.query('UPDATE saved_lists SET updated_at = NOW() WHERE id = $1', [req.params.id]);
+    res.json({ added: rowCount });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/lists/:id/members/:person_id', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'DELETE FROM saved_list_members WHERE list_id = $1 AND person_id = $2',
+      [req.params.id, req.params.person_id]
+    );
+    await pool.query('UPDATE saved_lists SET updated_at = NOW() WHERE id = $1', [req.params.id]);
+    res.json({ deleted: result.rowCount });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── Outreach Status ──────────────────────────────────────────────────────────
+const OUTREACH_STATUSES = new Set([
+  'new','queued','contacted','replied','interviewing','hired','not_interested','do_not_contact'
+]);
+
+app.patch('/api/people/:id/outreach', async (req, res) => {
+  try {
+    const { status, note, mark_contacted } = req.body || {};
+    if (status && !OUTREACH_STATUSES.has(status)) {
+      return res.status(400).json({ error: `invalid status. allowed: ${[...OUTREACH_STATUSES].join(', ')}` });
+    }
+    const touchContacted = mark_contacted === true || status === 'contacted';
+    const { rows } = await pool.query(`
+      INSERT INTO outreach (person_id, status, note, last_contacted_at)
+      VALUES ($1, COALESCE($2, 'new'), $3, CASE WHEN $4 THEN NOW() ELSE NULL END)
+      ON CONFLICT (person_id) DO UPDATE SET
+        status            = COALESCE(EXCLUDED.status, outreach.status),
+        note              = COALESCE(EXCLUDED.note, outreach.note),
+        last_contacted_at = CASE WHEN $4 THEN NOW() ELSE outreach.last_contacted_at END,
+        updated_at        = NOW()
+      RETURNING *
+    `, [req.params.id, status || null, note ?? null, touchContacted]);
+    res.json(rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/outreach/summary', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT COALESCE(status, 'new') AS status, COUNT(*)::int AS n
+      FROM outreach
+      GROUP BY COALESCE(status, 'new')
+      ORDER BY n DESC
+    `);
+    res.json({ by_status: rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 // ─── Ingest single person (from browser scraper) ──────────────────────────────
 app.post('/api/people/ingest', async (req, res) => {
