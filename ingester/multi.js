@@ -341,19 +341,42 @@ async function runLinkedIn(state) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // SOURCE 2: State bulk downloads (direct CSV/Excel from state regulator sites)
 // ═══════════════════════════════════════════════════════════════════════════════
+// A state value can be a single URL string, or an array of URLs (for states
+// that split their roster across multiple files by last-name range).
 const STATE_DOWNLOADS = {
   CT: 'https://portal.ct.gov/-/media/DOB/Consumer-Credit-Licenses/Mortgage_Loan_Originators.xlsx',
-  // Add more as we find them
+
+  // FL splits into three files (A-I, J-R, S-Z) on
+  // https://flofr.gov/education/public-information/registration-data-download
+  // — replace these placeholders with the real hrefs (grab them from the
+  // "Loan Originator" section of the page).
+  // FL: [
+  //   'https://flofr.gov/sitePages/documents/LO_A-I.xlsx',
+  //   'https://flofr.gov/sitePages/documents/LO_J-R.xlsx',
+  //   'https://flofr.gov/sitePages/documents/LO_S-Z.xlsx',
+  // ],
+
+  // MA: bundled as a single XLSX on
+  // https://www.mass.gov/lists/download-a-list-of-approved-licensees
+  // MA: 'https://www.mass.gov/doc/mortgage-loan-originator-list/download',
 };
 
 async function runStateBulkDownload(state) {
-  const url = STATE_DOWNLOADS[state];
-  if (!url) {
+  const entry = STATE_DOWNLOADS[state];
+  if (!entry) {
     console.log(`No bulk download available for ${state}`);
     return 0;
   }
+  const urls = Array.isArray(entry) ? entry : [entry];
+  let total = 0;
+  for (const url of urls) {
+    total += await runStateBulkDownloadFromUrl(state, url);
+  }
+  return total;
+}
 
-  console.log(`\n📥 Downloading ${state} licensee file...`);
+async function runStateBulkDownloadFromUrl(state, url) {
+  console.log(`\n📥 Downloading ${state} licensee file: ${url}`);
 
   try {
     const res = await http.get(url, { responseType: 'arraybuffer' });

@@ -19,6 +19,11 @@ const pool = require('../db');
 const DELAY = parseInt(process.env.SCRAPE_DELAY_MS) || 3000;
 const BASE = 'https://nmlsconsumeraccess.org';
 
+// FAST_MODE=1 skips per-profile detail fetch. Uses only what search returns
+// (NMLS ID + Name + sometimes company/city). ~30x faster — good for seeding
+// a state, then running a second pass later to enrich profiles.
+const FAST_MODE = process.env.FAST_MODE === '1' || process.argv.includes('--fast');
+
 const ALL_STATES = [
   'AL','AK','AZ','AR','CA','CO','CT','DC','DE','FL','GA','HI','ID',
   'IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO',
@@ -278,20 +283,44 @@ async function ingestState(state) {
         for (const rec of records) {
           const nmlsId = rec.NMLSId || rec.nmlsId || rec.id;
           if (!nmlsId) continue;
-          await sleep(DELAY);
-          try {
-            const profile = await fetchProfile(client, nmlsId);
-            if (!profile) continue;
-            if (!profile.full_name && rec.Name) {
-              profile.full_name = rec.Name;
-              const parts = rec.Name.split(/\s+/);
-              profile.first_name = parts[0]||'';
-              profile.last_name  = parts[parts.length-1]||'';
-            }
-            await upsertPerson(profile, state);
-            added++;
-            process.stdout.write('·');
-          } catch { errors++; }
+
+          if (FAST_MODE) {
+            // Skip profile fetch — just upsert search-result-level data
+            try {
+              const name = rec.Name || rec.FullName || rec.name || '';
+              const parts = name.split(/\s+/).filter(Boolean);
+              const profile = {
+                nmls_id:      String(nmlsId),
+                full_name:    name,
+                first_name:   parts[0] || '',
+                last_name:    parts.length > 1 ? parts[parts.length - 1] : '',
+                company_name: rec.Employer || rec.Company || rec.EmployerName || null,
+                city:         rec.City || null,
+                state:        rec.State || state,
+                license_status: rec.Status || 'Active',
+                licenses:     [],
+              };
+              if (!profile.full_name) continue;
+              await upsertPerson(profile, state);
+              added++;
+              process.stdout.write('·');
+            } catch { errors++; }
+          } else {
+            await sleep(DELAY);
+            try {
+              const profile = await fetchProfile(client, nmlsId);
+              if (!profile) continue;
+              if (!profile.full_name && rec.Name) {
+                profile.full_name = rec.Name;
+                const parts = rec.Name.split(/\s+/);
+                profile.first_name = parts[0]||'';
+                profile.last_name  = parts[parts.length-1]||'';
+              }
+              await upsertPerson(profile, state);
+              added++;
+              process.stdout.write('·');
+            } catch { errors++; }
+          }
         }
 
         if (records.length < 50 || page >= Math.ceil(total/50)) break;
@@ -313,13 +342,14 @@ async function ingestState(state) {
 }
 
 async function run() {
-  const states = process.argv.slice(2).length
-    ? process.argv.slice(2).map(s => s.toUpperCase())
+  const states = process.argv.slice(2).filter(a => !a.startsWith('--')).length
+    ? process.argv.slice(2).filter(a => !a.startsWith('--')).map(s => s.toUpperCase())
     : ALL_STATES;
 
   console.log(`\n🏦 MortgageDB — NMLS Ingester v2`);
   console.log(`📍 States: ${states.join(', ')}`);
-  console.log(`⏱  Delay: ${DELAY}ms\n`);
+  console.log(`⏱  Delay: ${DELAY}ms`);
+  console.log(`⚡ Fast mode: ${FAST_MODE ? 'ON (search-only, no profile fetch)' : 'off'}\n`);
 
   await pool.query('SELECT 1');
   console.log('✅ DB connected\n');
