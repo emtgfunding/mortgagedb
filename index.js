@@ -373,16 +373,28 @@ function start() {
   }
 
   // Bind to 0.0.0.0 explicitly so Railway's edge proxy can reach us on
-  // container network interfaces, not just loopback. Also log whether PORT
-  // came from the env — if you see "(env PORT unset → fallback)" in the
-  // Railway logs, Railway isn't injecting PORT and the domain target port
-  // in service settings must match this number.
-  const portSource = process.env.PORT ? `(env PORT=${process.env.PORT})` : '(env PORT unset → fallback)';
+  // container network interfaces, not just loopback. The diagnostic block
+  // below surfaces everything we need to debug Railway routing from a log
+  // snapshot — no Railway CLI / dashboard access required.
+  const portSource = process.env.PORT
+    ? `env PORT=${process.env.PORT}`
+    : 'env PORT UNSET — Railway must target port ' + PORT;
+
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`\n🚀 MortgageDB API listening on 0.0.0.0:${PORT} ${portSource}`);
-    console.log(`   Health: /health`);
-    console.log(`   People: /api/people`);
-    console.log(`   Stats:  /api/stats\n`);
+    console.log('\n════════════════════════════════════════════════════');
+    console.log(`🚀 MortgageDB API listening on 0.0.0.0:${PORT}`);
+    console.log(`   ${portSource}`);
+    console.log('   --- Railway env snapshot ---');
+    for (const k of Object.keys(process.env).filter(k => k.startsWith('RAILWAY_')).sort()) {
+      // RAILWAY_* vars are public metadata (service ID, project ID, public
+      // domain) — safe to log. We deliberately do NOT echo DATABASE_URL or
+      // any secrets.
+      console.log(`   ${k}=${process.env[k]}`);
+    }
+    console.log(`   NODE_ENV=${process.env.NODE_ENV || '(unset)'}`);
+    console.log(`   HOSTNAME=${process.env.HOSTNAME || '(unset)'}`);
+    console.log('════════════════════════════════════════════════════\n');
+    console.log('   Endpoints: /health  /api/stats  /api/people\n');
   });
 }
 
