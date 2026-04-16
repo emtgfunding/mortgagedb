@@ -126,22 +126,25 @@ app.get('/health', async (req, res) => {
 });
 
 // ─── Stats ────────────────────────────────────────────────────────────────────
+// Quality gate: only count people with first_name + at least one contact method
+const QUALITY_GATE = `first_name IS NOT NULL AND TRIM(first_name) <> '' AND (email IS NOT NULL OR verified_email IS NOT NULL OR phone IS NOT NULL OR linkedin_url IS NOT NULL)`;
+
 app.get('/api/stats', async (req, res) => {
   try {
     const [people, companies, byState, byTier, withEmail, withLinkedIn] = await Promise.all([
-      pool.query('SELECT COUNT(*) FROM people'),
+      pool.query(`SELECT COUNT(*) FROM people WHERE ${QUALITY_GATE}`),
       pool.query('SELECT COUNT(*) FROM companies'),
       pool.query(`
-        SELECT state, COUNT(*) as count 
-        FROM people WHERE state IS NOT NULL
+        SELECT state, COUNT(*) as count
+        FROM people WHERE state IS NOT NULL AND ${QUALITY_GATE}
         GROUP BY state ORDER BY count DESC LIMIT 20
       `),
       pool.query(`
         SELECT production_tier, COUNT(*) as count
-        FROM people GROUP BY production_tier
+        FROM people WHERE ${QUALITY_GATE} GROUP BY production_tier
       `),
-      pool.query(`SELECT COUNT(*) FROM people WHERE email IS NOT NULL OR verified_email IS NOT NULL`),
-      pool.query(`SELECT COUNT(*) FROM people WHERE linkedin_url IS NOT NULL`)
+      pool.query(`SELECT COUNT(*) FROM people WHERE ${QUALITY_GATE} AND (email IS NOT NULL OR verified_email IS NOT NULL)`),
+      pool.query(`SELECT COUNT(*) FROM people WHERE ${QUALITY_GATE} AND linkedin_url IS NOT NULL`)
     ]);
 
     res.json({
@@ -179,13 +182,19 @@ app.get('/api/people', async (req, res) => {
       per_page = 25
     } = req.query;
 
-    const conditions = [];
+    // ── Baseline quality gates (always enforced) ──
+    // 1. Must have a first name
+    // 2. Must have at least one contact channel (email, phone, or linkedin)
+    const conditions = [
+      `(p.first_name IS NOT NULL AND TRIM(p.first_name) <> '')`,
+      `(p.email IS NOT NULL OR p.verified_email IS NOT NULL OR p.phone IS NOT NULL OR p.linkedin_url IS NOT NULL)`,
+    ];
     const params = [];
     let p = 1;
 
     if (q) {
       conditions.push(`(
-        p.full_name ILIKE $${p} OR 
+        p.full_name ILIKE $${p} OR
         p.company_name ILIKE $${p} OR
         p.nmls_id = $${p+1}
       )`);
@@ -377,7 +386,11 @@ app.get('/api/export/csv', async (req, res) => {
       list_id, outreach_status
     } = req.query;
 
-    const conditions = [];
+    // Same baseline quality gates as /api/people
+    const conditions = [
+      `(p.first_name IS NOT NULL AND TRIM(p.first_name) <> '')`,
+      `(p.email IS NOT NULL OR p.verified_email IS NOT NULL OR p.phone IS NOT NULL OR p.linkedin_url IS NOT NULL)`,
+    ];
     const params = [];
     let p = 1;
 
