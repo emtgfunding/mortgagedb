@@ -574,6 +574,29 @@ app.patch('/api/people/:id/outreach', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ─── Bulk outreach status update ─────────────────────────────────────────────
+app.patch('/api/outreach/bulk', async (req, res) => {
+  try {
+    const { person_ids, status } = req.body;
+    if (!Array.isArray(person_ids) || person_ids.length === 0)
+      return res.status(400).json({ error: 'person_ids array required' });
+    if (!OUTREACH_STATUSES.has(status))
+      return res.status(400).json({ error: `Invalid status: ${status}` });
+
+    // Limit batch to 500 at a time
+    const batch = person_ids.slice(0, 500);
+    const { rowCount } = await pool.query(`
+      INSERT INTO outreach (person_id, status)
+      SELECT unnest($1::uuid[]), $2
+      ON CONFLICT (person_id) DO UPDATE SET
+        status     = EXCLUDED.status,
+        updated_at = NOW()
+    `, [batch, status]);
+
+    res.json({ updated: rowCount });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/outreach/summary', async (req, res) => {
   try {
     const { rows } = await pool.query(`

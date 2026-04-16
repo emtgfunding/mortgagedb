@@ -147,6 +147,13 @@
         <div class="flex items-center gap-2 px-3 py-1.5 bg-indigo-50 rounded-md">
           <span class="text-sm font-medium text-indigo-700" x-text="`${selected.length} selected`"></span>
           <button @click="openAddToList()" class="text-xs px-2 py-1 bg-indigo-600 text-white rounded hover:bg-indigo-700">Add to list</button>
+          <select @change="bulkSetStatus($event.target.value); $event.target.value = ''"
+                  class="text-xs px-2 py-1 border border-indigo-300 rounded bg-white text-indigo-700">
+            <option value="">Set status…</option>
+            <template x-for="s in pipelineStatuses" :key="s.key">
+              <option :value="s.key" x-text="s.label"></option>
+            </template>
+          </select>
           <button @click="selected = []" class="text-xs text-slate-500 hover:text-slate-900">Clear</button>
         </div>
       </template>
@@ -218,6 +225,13 @@
         </label>
         <div class="flex-1"></div>
         <button @click="resetFilters()" class="text-xs text-slate-500 hover:text-slate-900">Reset filters</button>
+      </div>
+      <div class="flex gap-2 mt-3 pt-3 border-t border-slate-100">
+        <span class="text-xs text-slate-400 py-1">Quick:</span>
+        <button @click="applyPreset('reachable')" class="text-xs px-2.5 py-1 border border-slate-200 rounded-full hover:bg-indigo-50 hover:border-indigo-300 text-slate-700">Reachable (has email + phone)</button>
+        <button @click="applyPreset('top_producers')" class="text-xs px-2.5 py-1 border border-slate-200 rounded-full hover:bg-indigo-50 hover:border-indigo-300 text-slate-700">Top Producers</button>
+        <button @click="applyPreset('clean_slate')" class="text-xs px-2.5 py-1 border border-slate-200 rounded-full hover:bg-indigo-50 hover:border-indigo-300 text-slate-700">Clean Slate (new, no reg)</button>
+        <button @click="applyPreset('linkedin_only')" class="text-xs px-2.5 py-1 border border-slate-200 rounded-full hover:bg-indigo-50 hover:border-indigo-300 text-slate-700">LinkedIn profiles</button>
       </div>
     </div>
 
@@ -671,6 +685,34 @@ function app() {
         await this.loadLists();
         this.toastMsg(`Added ${r.added} to list`);
       } catch (err) { this.toastMsg('Add failed: ' + err.message); }
+    },
+
+    async bulkSetStatus(status) {
+      if (!status || this.selected.length === 0) return;
+      try {
+        const r = await fetch('/api/outreach/bulk', {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ person_ids: this.selected, status })
+        }).then(r => r.json());
+        this.toastMsg(`Set ${r.updated} contacts to "${this.statusLabel(status)}"`);
+        this.selected = [];
+        await Promise.all([this.reload(), this.loadOutreachCounts()]);
+      } catch (err) { this.toastMsg('Bulk update failed: ' + err.message); }
+    },
+
+    applyPreset(name) {
+      this.resetFilters();
+      switch (name) {
+        case 'reachable':
+          this.filters.has_email = true; this.filters.has_phone = true; break;
+        case 'top_producers':
+          this.filters.production_tier = 'top'; break;
+        case 'clean_slate':
+          this.filters.no_regulatory = true; this.view = 'status'; this.viewArg = 'new'; break;
+        case 'linkedin_only':
+          this.filters.has_linkedin = true; break;
+      }
+      this.page = 1; this.reload();
     },
 
     async exportCsv() {
