@@ -51,41 +51,63 @@ function parseArgs() {
   return opts;
 }
 
-// ─── Google search for LinkedIn profile ──────────────────────────────────────
-async function findLinkedInUrl(page, person) {
-  const query = `site:linkedin.com/in "${person.first_name} ${person.last_name}" mortgage`;
+// ─── Google search for LinkedIn profile + extract snippet data ───────────────
+// Returns { linkedinUrl, headline, snippet } or null
+async function findLinkedInViaGoogle(page, person) {
+  const name = `${person.first_name} ${person.last_name}`.trim();
+  const company = person.company_name ? ` "${person.company_name}"` : '';
+  const query = `site:linkedin.com/in "${name}"${company} mortgage loan`;
   const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&num=5`;
 
   try {
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    await sleep(1500);
+    await sleep(2000);
 
-    const linkedinUrl = await page.evaluate(() => {
-      const links = document.querySelectorAll('a[href*="linkedin.com/in/"]');
-      for (const link of links) {
-        const href = link.href;
-        const match = href.match(/https?:\/\/[a-z]+\.linkedin\.com\/in\/[\w-]+/);
-        if (match) return match[0];
-        // Google wraps URLs — check data attributes or redirect URLs
-        const googleHref = link.getAttribute('href') || '';
-        const decoded = decodeURIComponent(googleHref);
-        const m2 = decoded.match(/https?:\/\/[a-z]+\.linkedin\.com\/in\/[\w-]+/);
-        if (m2) return m2[0];
+    const result = await page.evaluate((personName) => {
+      // Find LinkedIn profile links in Google results
+      const allLinks = [...document.querySelectorAll('a')];
+      let bestMatch = null;
+
+      for (const link of allLinks) {
+        const href = link.href || link.getAttribute('href') || '';
+        const decoded = decodeURIComponent(href);
+        const match = decoded.match(/(https?:\/\/[a-z]+\.linkedin\.com\/in\/[\w-]+)/);
+        if (!match) continue;
+
+        const url = match[1];
+        // Get the containing search result
+        const resultDiv = link.closest('[data-sokoban-container], .g, [class*="result"]') || link.parentElement?.parentElement?.parentElement;
+        const title = link.textContent?.trim() || '';
+        const snippet = resultDiv?.querySelector('[data-sncf], .VwiC3b, [class*="snippet"]')?.textContent?.trim() || '';
+
+        if (!bestMatch) {
+          bestMatch = { url, title, snippet };
+        }
+        // Prefer results whose title contains our person's name
+        const nameWords = personName.toLowerCase().split(/\s+/);
+        const titleLower = title.toLowerCase();
+        if (nameWords.some(w => titleLower.includes(w))) {
+          bestMatch = { url, title, snippet };
+          break;
+        }
       }
-      return null;
-    });
 
-    return linkedinUrl;
+      return bestMatch;
+    }, name);
+
+    return result;
   } catch {
     return null;
   }
 }
 
-// ─── Scrape public LinkedIn profile ──────────────────────────────────────────
+// ─── Scrape LinkedIn profile data ────────────────────────────────────────────
+// Strategy: LinkedIn serves JSON-LD structured data even on the login-gated
+// page. We extract that first, then fall back to visible DOM elements.
 async function scrapeLinkedInProfile(page, url) {
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-    await sleep(2000);
+    await sleep(2500);
 
     const profile = await page.evaluate(() => {
       const getText = (sel) => {
@@ -93,50 +115,143 @@ async function scrapeLinkedInProfile(page, url) {
         return el ? el.textContent.trim() : null;
       };
 
-      // Name & headline
-      const name = getText('h1') || '';
-      const headline = getText('.top-card-layout__headline') ||
-                       getText('[data-section="headline"]') ||
-                       getText('h2') || '';
-      const location = getText('.top-card-layout__first-subline') ||
-                       getText('[class*="location"]') || '';
-      const photo = document.querySelector('img.top-card__profile-image, img[class*="profile-photo"]');
-
-      // Experience section
+      let headline = '';
+      let name = '';
+      let location = '';
+      let photo_url = null;
       const experiences = [];
-      const expSection = document.querySelector('#experience') ||
-                         document.querySelector('[data-section="experience"]') ||
-                         document.querySelector('section.experience');
 
-      if (expSection) {
-        const items = expSection.querySelectorAll('li, [class*="experience-item"], [class*="position"]');
-        items.forEach(item => {
-          const title = item.querySelector('h3, [class*="title"]')?.textContent?.trim() || '';
-          const company = item.querySelector('h4, [class*="subtitle"], [class*="company"]')?.textContent?.trim() || '';
-          const dates = item.querySelector('[class*="date-range"], [class*="dates"], span.date-range')?.textContent?.trim() || '';
+      // ── Strategy 1: JSON-LD structured data ──
+      // LinkedIn embeds Schema.org Person/ProfilePage JSON-LD even on gated pages
+      const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+      for (const script of scripts) {
+        try {
+          const data = JSON.parse(script.textContent);
+          const items = Array.isArray(data) ? data : [data];
 
-          if (title || company) {
-            // Parse dates like "Jan 2020 - Present" or "2018 - 2020"
-            const dateMatch = dates.match(/(\w+\s*\d{4})\s*[-–]\s*(\w+\s*\d{4}|Present)/i);
-            experiences.push({
-              title: title || null,
-              company: company || null,
-              start_date: dateMatch ? dateMatch[1] : null,
-              end_date: dateMatch ? dateMatch[2] : null,
-              is_current: /present/i.test(dates),
-              raw_dates: dates || null,
-            });
+          for (const item of items) {
+            // Person schema
+            if (item['@type'] === 'Person' || item['@type']?.includes?.('Person')) {
+              name = item.name || name;
+              headline = item.jobTitle || item.description || headline;
+              location = item.address?.addressLocality || location;
+              photo_url = item.image?.contentUrl || item.image || photo_url;
+
+              // worksFor can be an array of organizations
+              const worksFor = Array.isArray(item.worksFor) ? item.worksFor : item.worksFor ? [item.worksFor] : [];
+              for (const org of worksFor) {
+                experiences.push({
+                  title: item.jobTitle || null,
+                  company: org.name || null,
+                  start_date: null,
+                  end_date: null,
+                  is_current: true,
+                  raw_dates: null,
+                });
+              }
+
+              // alumniOf for past companies/education
+              const alumni = Array.isArray(item.alumniOf) ? item.alumniOf : [];
+              for (const org of alumni) {
+                if (org['@type'] === 'Organization') {
+                  experiences.push({
+                    title: null,
+                    company: org.name || null,
+                    start_date: null,
+                    end_date: null,
+                    is_current: false,
+                    raw_dates: null,
+                  });
+                }
+              }
+            }
+
+            // ProfilePage might have mainEntity
+            if (item.mainEntity) {
+              const me = item.mainEntity;
+              name = me.name || name;
+              headline = me.jobTitle || me.description || headline;
+              const meWorks = Array.isArray(me.worksFor) ? me.worksFor : me.worksFor ? [me.worksFor] : [];
+              for (const org of meWorks) {
+                if (!experiences.some(e => e.company === org.name)) {
+                  experiences.push({
+                    title: me.jobTitle || null,
+                    company: org.name || null,
+                    start_date: null,
+                    end_date: null,
+                    is_current: true,
+                    raw_dates: null,
+                  });
+                }
+              }
+            }
           }
-        });
+        } catch {}
       }
 
-      return {
-        name,
-        headline,
-        location,
-        photo_url: photo?.src || null,
-        experiences,
-      };
+      // ── Strategy 2: Visible DOM (works on non-gated public profiles) ──
+      if (!name) {
+        name = getText('h1') || '';
+      }
+      if (!headline) {
+        headline = getText('.top-card-layout__headline') ||
+                   getText('[data-section="headline"]') ||
+                   getText('.text-body-medium.break-words') || '';
+      }
+      if (!location) {
+        location = getText('.top-card-layout__first-subline') ||
+                   getText('[class*="location"]') || '';
+      }
+      if (!photo_url) {
+        const img = document.querySelector('img.top-card__profile-image, img[class*="profile-photo"], img.pv-top-card-profile-picture__image');
+        photo_url = img?.src || null;
+      }
+
+      // Experience from DOM (if visible — logged-in or truly public profiles)
+      if (experiences.length === 0) {
+        const expSection = document.querySelector('#experience, [data-section="experience"], section.experience');
+        if (expSection) {
+          const items = expSection.querySelectorAll('li, [class*="experience-item"], [class*="position"]');
+          items.forEach(item => {
+            const title = item.querySelector('h3, [class*="title"]')?.textContent?.trim() || '';
+            const company = item.querySelector('h4, [class*="subtitle"], [class*="company"]')?.textContent?.trim() || '';
+            const dates = item.querySelector('[class*="date-range"], [class*="dates"], span.date-range')?.textContent?.trim() || '';
+            if (title || company) {
+              const dateMatch = dates.match(/(\w+\s*\d{4})\s*[-–]\s*(\w+\s*\d{4}|Present)/i);
+              experiences.push({
+                title: title || null,
+                company: company || null,
+                start_date: dateMatch ? dateMatch[1] : null,
+                end_date: dateMatch ? dateMatch[2] : null,
+                is_current: /present/i.test(dates),
+                raw_dates: dates || null,
+              });
+            }
+          });
+        }
+      }
+
+      // ── Strategy 3: Parse the page title (always available) ──
+      // LinkedIn page titles: "Name - Title - Company | LinkedIn"
+      if (!headline && document.title) {
+        const parts = document.title.replace(/\s*[|·]\s*LinkedIn.*$/, '').split(/\s*[-–]\s*/);
+        if (parts.length >= 2) {
+          if (!name) name = parts[0].trim();
+          headline = parts.slice(1).join(' - ').trim();
+          // Extract company from "Title at Company" pattern
+          const atMatch = headline.match(/(.+?)\s+at\s+(.+)/i);
+          if (atMatch && experiences.length === 0) {
+            experiences.push({
+              title: atMatch[1].trim(),
+              company: atMatch[2].trim(),
+              start_date: null, end_date: null,
+              is_current: true, raw_dates: null,
+            });
+          }
+        }
+      }
+
+      return { name, headline, location, photo_url, experiences };
     });
 
     return profile;
@@ -144,6 +259,60 @@ async function scrapeLinkedInProfile(page, url) {
     console.log(`    ⚠ Scrape failed: ${err.message}`);
     return null;
   }
+}
+
+// ─── Enrich from Google snippet when LinkedIn is fully gated ─────────────────
+// Parses "Title - Company - Location" from Google search result snippets
+function parseGoogleSnippet(googleResult) {
+  if (!googleResult || !googleResult.snippet) return [];
+  const experiences = [];
+
+  // Google snippets for LinkedIn often contain:
+  // "Title at Company. Location. Previous: Title at Company2."
+  // or "Name - Title - Company | LinkedIn"
+  const snippet = googleResult.snippet;
+  const title = googleResult.title || '';
+
+  // Parse title: "First Last - Title at Company | LinkedIn"
+  const titleMatch = title.replace(/\s*[|·]\s*LinkedIn.*$/, '').match(/^.+?\s*[-–]\s*(.+)/);
+  if (titleMatch) {
+    const rest = titleMatch[1].trim();
+    const atMatch = rest.match(/(.+?)\s+at\s+(.+)/i);
+    if (atMatch) {
+      experiences.push({
+        title: atMatch[1].trim(),
+        company: atMatch[2].trim(),
+        start_date: null, end_date: null,
+        is_current: true, raw_dates: null,
+      });
+    }
+  }
+
+  // Parse snippet for "Previous:" pattern
+  const prevMatch = snippet.match(/Previous(?:ly)?:\s*(.+?)(?:\.|$)/i);
+  if (prevMatch) {
+    const prevParts = prevMatch[1].split(/,\s*/);
+    for (const part of prevParts) {
+      const atMatch = part.match(/(.+?)\s+at\s+(.+)/i);
+      if (atMatch) {
+        experiences.push({
+          title: atMatch[1].trim(),
+          company: atMatch[2].trim(),
+          start_date: null, end_date: null,
+          is_current: false, raw_dates: null,
+        });
+      } else if (part.trim()) {
+        experiences.push({
+          title: null,
+          company: part.trim(),
+          start_date: null, end_date: null,
+          is_current: false, raw_dates: null,
+        });
+      }
+    }
+  }
+
+  return experiences;
 }
 
 // ─── Save enrichment data ────────────────────────────────────────────────────
@@ -278,19 +447,21 @@ async function run() {
 
     try {
       let linkedinUrl = person.linkedin_url;
+      let googleData = null;
 
-      // Step 1: Find LinkedIn URL if missing
+      // Step 1: Google search for LinkedIn URL + snippet data
       if (!linkedinUrl) {
         process.stdout.write('→ searching...');
-        linkedinUrl = await findLinkedInUrl(page, person);
+        googleData = await findLinkedInViaGoogle(page, person);
         await sleep(DELAY);
 
-        if (!linkedinUrl) {
+        if (!googleData) {
           process.stdout.write(' not found');
           await markAttempted(person.id);
           failed++;
           continue;
         }
+        linkedinUrl = googleData.url;
         process.stdout.write(` found`);
       }
 
@@ -300,16 +471,47 @@ async function run() {
       const profile = await scrapeLinkedInProfile(page, linkedinUrl);
 
       if (!profile) {
+        // Even if scraping failed, try to save Google snippet data
+        if (googleData) {
+          const snippetExps = parseGoogleSnippet(googleData);
+          if (snippetExps.length > 0) {
+            const fallback = { name: '', headline: googleData.title || '', location: '', photo_url: null, experiences: snippetExps };
+            await saveEnrichment(person.id, linkedinUrl, fallback);
+            process.stdout.write(` 📎 (${snippetExps.length} from Google)`);
+            enriched++;
+            continue;
+          }
+        }
         await markAttempted(person.id);
         failed++;
         continue;
       }
 
-      // Step 3: Save to DB
+      // Step 3: If LinkedIn returned 0 experiences, merge in Google snippet data
+      if (profile.experiences.length === 0 && googleData) {
+        const snippetExps = parseGoogleSnippet(googleData);
+        profile.experiences.push(...snippetExps);
+      }
+
+      // Also try to parse headline for employment if still empty
+      if (profile.experiences.length === 0 && profile.headline) {
+        const atMatch = profile.headline.match(/(.+?)\s+at\s+(.+)/i);
+        if (atMatch) {
+          profile.experiences.push({
+            title: atMatch[1].trim(),
+            company: atMatch[2].trim(),
+            start_date: null, end_date: null,
+            is_current: true, raw_dates: null,
+          });
+        }
+      }
+
+      // Step 4: Save to DB
       const ok = await saveEnrichment(person.id, linkedinUrl, profile);
       if (ok) {
         const expCount = profile.experiences?.length || 0;
-        process.stdout.write(` ✅ (${expCount} positions)`);
+        const src = expCount > 0 ? '✅' : '📎';
+        process.stdout.write(` ${src} (${expCount} positions)`);
         enriched++;
       } else {
         failed++;
