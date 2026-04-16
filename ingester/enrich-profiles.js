@@ -52,11 +52,19 @@ function parseArgs() {
 }
 
 // ─── Google search for LinkedIn profile + extract snippet data ───────────────
-// Returns { linkedinUrl, headline, snippet } or null
-async function findLinkedInViaGoogle(page, person) {
-  const name = `${person.first_name} ${person.last_name}`.trim();
-  const company = person.company_name ? ` "${person.company_name}"` : '';
-  const query = `site:linkedin.com/in "${name}"${company} mortgage loan`;
+// Returns { url, title, snippet } or null
+// If knownUrl is provided, searches for that exact URL to get Google's snippet.
+async function findLinkedInViaGoogle(page, person, knownUrl = null) {
+  let query;
+  if (knownUrl) {
+    // Extract the slug and search for it directly
+    const slug = knownUrl.match(/linkedin\.com\/in\/([\w-]+)/)?.[1] || '';
+    query = `site:linkedin.com/in/${slug}`;
+  } else {
+    const name = `${person.first_name} ${person.last_name}`.trim();
+    const company = person.company_name ? ` "${person.company_name}"` : '';
+    query = `site:linkedin.com/in "${name}"${company} mortgage loan`;
+  }
   const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&num=5`;
 
   try {
@@ -262,52 +270,79 @@ async function scrapeLinkedInProfile(page, url) {
 }
 
 // ─── Enrich from Google snippet when LinkedIn is fully gated ─────────────────
-// Parses "Title - Company - Location" from Google search result snippets
+// Google search results for LinkedIn profiles typically look like:
+//   Title: "First Last - Senior Loan Officer - UWM | LinkedIn"
+//   Snippet: "Senior Loan Officer at United Wholesale Mortgage. Greater Detroit Area.
+//             Experience: UWM · 2020 - Present. Previous: Quicken Loans, Flagstar Bank"
 function parseGoogleSnippet(googleResult) {
-  if (!googleResult || !googleResult.snippet) return [];
+  if (!googleResult) return [];
   const experiences = [];
+  const seen = new Set();
 
-  // Google snippets for LinkedIn often contain:
-  // "Title at Company. Location. Previous: Title at Company2."
-  // or "Name - Title - Company | LinkedIn"
-  const snippet = googleResult.snippet;
+  const addExp = (title, company, isCurrent) => {
+    if (!company && !title) return;
+    const key = `${title||''}|${company||''}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    experiences.push({
+      title: title || null, company: company || null,
+      start_date: null, end_date: null,
+      is_current: isCurrent, raw_dates: null,
+    });
+  };
+
   const title = googleResult.title || '';
+  const snippet = googleResult.snippet || '';
+  const combined = `${title} ${snippet}`;
 
-  // Parse title: "First Last - Title at Company | LinkedIn"
-  const titleMatch = title.replace(/\s*[|·]\s*LinkedIn.*$/, '').match(/^.+?\s*[-–]\s*(.+)/);
-  if (titleMatch) {
-    const rest = titleMatch[1].trim();
+  // Parse Google title: "First Last - Title at Company | LinkedIn"
+  // or "First Last - Title - Company | LinkedIn"
+  const cleanTitle = title.replace(/\s*[|·]\s*LinkedIn.*$/i, '').trim();
+  const titleParts = cleanTitle.split(/\s*[-–]\s*/);
+  if (titleParts.length >= 2) {
+    const rest = titleParts.slice(1).join(' - ');
     const atMatch = rest.match(/(.+?)\s+at\s+(.+)/i);
     if (atMatch) {
-      experiences.push({
-        title: atMatch[1].trim(),
-        company: atMatch[2].trim(),
-        start_date: null, end_date: null,
-        is_current: true, raw_dates: null,
-      });
+      addExp(atMatch[1].trim(), atMatch[2].trim(), true);
+    } else if (titleParts.length >= 3) {
+      // "Name - Title - Company" format
+      addExp(titleParts[1].trim(), titleParts[2].trim(), true);
+    } else if (titleParts.length === 2 && !titleParts[1].toLowerCase().includes('linkedin')) {
+      // Could be just "Name - Company" or "Name - Title"
+      addExp(null, titleParts[1].trim(), true);
     }
   }
 
-  // Parse snippet for "Previous:" pattern
-  const prevMatch = snippet.match(/Previous(?:ly)?:\s*(.+?)(?:\.|$)/i);
+  // Parse snippet: "Title at Company" pattern
+  const snippetAtMatches = snippet.matchAll(/(?:^|[.·]\s*)([^.·]+?)\s+at\s+([^.·]+?)(?:\s*[.·]|$)/gi);
+  for (const m of snippetAtMatches) {
+    addExp(m[1].trim(), m[2].trim(), true);
+  }
+
+  // Parse "Experience:" section in snippet
+  const expMatch = snippet.match(/Experience[:\s]+(.+?)(?:Education|Skills|$)/is);
+  if (expMatch) {
+    const expParts = expMatch[1].split(/[·,]\s*/);
+    for (const part of expParts) {
+      const clean = part.replace(/\d{4}\s*[-–]\s*(Present|\d{4})/gi, '').trim();
+      if (clean && clean.length > 2 && clean.length < 100) {
+        const atM = clean.match(/(.+?)\s+at\s+(.+)/i);
+        if (atM) addExp(atM[1].trim(), atM[2].trim(), /present/i.test(part));
+        else addExp(null, clean, /present/i.test(part));
+      }
+    }
+  }
+
+  // Parse "Previous:" or "Previously:" pattern
+  const prevMatch = snippet.match(/Previous(?:ly)?[:\s]+(.+?)(?:\.|Education|Skills|$)/i);
   if (prevMatch) {
-    const prevParts = prevMatch[1].split(/,\s*/);
+    const prevParts = prevMatch[1].split(/[,·]\s*/);
     for (const part of prevParts) {
-      const atMatch = part.match(/(.+?)\s+at\s+(.+)/i);
-      if (atMatch) {
-        experiences.push({
-          title: atMatch[1].trim(),
-          company: atMatch[2].trim(),
-          start_date: null, end_date: null,
-          is_current: false, raw_dates: null,
-        });
-      } else if (part.trim()) {
-        experiences.push({
-          title: null,
-          company: part.trim(),
-          start_date: null, end_date: null,
-          is_current: false, raw_dates: null,
-        });
+      const clean = part.trim();
+      if (clean && clean.length > 2) {
+        const atM = clean.match(/(.+?)\s+at\s+(.+)/i);
+        if (atM) addExp(atM[1].trim(), atM[2].trim(), false);
+        else addExp(null, clean, false);
       }
     }
   }
@@ -449,23 +484,29 @@ async function run() {
       let linkedinUrl = person.linkedin_url;
       let googleData = null;
 
-      // Step 1: Google search for LinkedIn URL + snippet data
-      if (!linkedinUrl) {
-        process.stdout.write('→ searching...');
+      // Step 1: ALWAYS Google search — even if we already have the LinkedIn URL.
+      // LinkedIn gates almost everything behind login now, so Google's cached
+      // snippet ("Title at Company · Previous: ...") is our best data source.
+      process.stdout.write('→ googling...');
+      if (linkedinUrl) {
+        // Search for the exact LinkedIn profile to get Google's snippet
+        googleData = await findLinkedInViaGoogle(page, person, linkedinUrl);
+      } else {
         googleData = await findLinkedInViaGoogle(page, person);
-        await sleep(DELAY);
+      }
+      await sleep(DELAY);
 
-        if (!googleData) {
-          process.stdout.write(' not found');
-          await markAttempted(person.id);
-          failed++;
-          continue;
-        }
+      if (!linkedinUrl && googleData) {
         linkedinUrl = googleData.url;
-        process.stdout.write(` found`);
+        process.stdout.write(' found');
+      } else if (!linkedinUrl && !googleData) {
+        process.stdout.write(' not found');
+        await markAttempted(person.id);
+        failed++;
+        continue;
       }
 
-      // Step 2: Scrape the LinkedIn profile
+      // Step 2: Scrape the LinkedIn profile (JSON-LD + title parsing)
       process.stdout.write(' → scraping...');
       await sleep(DELAY);
       const profile = await scrapeLinkedInProfile(page, linkedinUrl);
