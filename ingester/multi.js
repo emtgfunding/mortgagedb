@@ -346,15 +346,13 @@ async function runLinkedIn(state) {
 const STATE_DOWNLOADS = {
   CT: 'https://portal.ct.gov/-/media/DOB/Consumer-Credit-Licenses/Mortgage_Loan_Originators.xlsx',
 
-  // FL splits into three files (A-I, J-R, S-Z) on
-  // https://flofr.gov/education/public-information/registration-data-download
-  // — replace these placeholders with the real hrefs (grab them from the
-  // "Loan Originator" section of the page).
-  // FL: [
-  //   'https://flofr.gov/sitePages/documents/LO_A-I.xlsx',
-  //   'https://flofr.gov/sitePages/documents/LO_J-R.xlsx',
-  //   'https://flofr.gov/sitePages/documents/LO_S-Z.xlsx',
-  // ],
+  // FL splits into three ZIP files (each contains an XLSX) —
+  // Source: https://flofr.gov/education/public-information/registration-data-download
+  FL: [
+    'https://real.flofr.com/Public/LO/LoanOriginators_AI_Monthly.zip',
+    'https://real.flofr.com/Public/LO/LoanOriginators_JR_Monthly.zip',
+    'https://real.flofr.com/Public/LO/LoanOriginators_SZ_Monthly.zip',
+  ],
 
   // MA: bundled as a single XLSX on
   // https://www.mass.gov/lists/download-a-list-of-approved-licensees
@@ -381,7 +379,22 @@ async function runStateBulkDownloadFromUrl(state, url) {
   try {
     const res = await http.get(url, { responseType: 'arraybuffer' });
     const xlsx = require('xlsx');
-    const wb = xlsx.read(res.data, { type: 'buffer' });
+
+    let buffer = Buffer.from(res.data);
+
+    // If it's a ZIP, extract the first xlsx/xls/csv inside
+    if (url.endsWith('.zip') || buffer[0] === 0x50 && buffer[1] === 0x4B) {
+      const AdmZip = require('adm-zip');
+      const zip = new AdmZip(buffer);
+      const entries = zip.getEntries().filter(e =>
+        /\.(xlsx|xls|csv)$/i.test(e.entryName) && !e.entryName.startsWith('__MACOSX')
+      );
+      if (entries.length === 0) throw new Error('No spreadsheet found inside ZIP');
+      console.log(`  📦 Extracted from ZIP: ${entries[0].entryName}`);
+      buffer = entries[0].getData();
+    }
+
+    const wb = xlsx.read(buffer, { type: 'buffer' });
     const ws = wb.Sheets[wb.SheetNames[0]];
 
     const raw = xlsx.utils.sheet_to_json(ws, { header: 1 });
