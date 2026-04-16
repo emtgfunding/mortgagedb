@@ -72,30 +72,47 @@ async function findLinkedInViaGoogle(page, person, knownUrl = null) {
     await sleep(2000);
 
     const result = await page.evaluate((personName) => {
-      // Find LinkedIn profile links in Google results
-      const allLinks = [...document.querySelectorAll('a')];
+      // Google's DOM changes frequently. The most reliable anchors are:
+      // - h3 elements contain the clean result title
+      // - The h3's parent <a> has the (sometimes truncated) LinkedIn URL
+      // - The h3's ancestor container has the full snippet text
+      const h3s = document.querySelectorAll('h3');
       let bestMatch = null;
 
-      for (const link of allLinks) {
-        const href = link.href || link.getAttribute('href') || '';
-        const decoded = decodeURIComponent(href);
-        const match = decoded.match(/(https?:\/\/[a-z]+\.linkedin\.com\/in\/[\w-]+)/);
-        if (!match) continue;
+      for (const h3 of h3s) {
+        const title = h3.textContent?.trim() || '';
+        if (!title) continue;
 
-        const url = match[1];
-        // Get the containing search result
-        const resultDiv = link.closest('[data-sokoban-container], .g, [class*="result"]') || link.parentElement?.parentElement?.parentElement;
-        const title = link.textContent?.trim() || '';
-        const snippet = resultDiv?.querySelector('[data-sncf], .VwiC3b, [class*="snippet"]')?.textContent?.trim() || '';
+        // Find the parent link
+        const link = h3.closest('a');
+        if (!link) continue;
+        const href = link.href || '';
+        if (!href.includes('linkedin.com/in/')) continue;
+
+        // Extract LinkedIn URL (may be truncated by Google)
+        const urlMatch = decodeURIComponent(href).match(/(https?:\/\/[a-z]+\.linkedin\.com\/in\/[\w-]+)/);
+        const url = urlMatch ? urlMatch[1] : href;
+
+        // Get the containing result block — walk up to find a large container
+        let container = h3;
+        for (let j = 0; j < 8; j++) {
+          container = container.parentElement;
+          if (!container) break;
+          if (container.getAttribute('data-hveid') || container.getAttribute('data-sokoban-container')) break;
+        }
+
+        // Get ALL text in the container — this includes the snippet
+        const fullText = container?.textContent || '';
 
         if (!bestMatch) {
-          bestMatch = { url, title, snippet };
+          bestMatch = { url, title, snippet: fullText.substring(0, 600) };
         }
+
         // Prefer results whose title contains our person's name
         const nameWords = personName.toLowerCase().split(/\s+/);
         const titleLower = title.toLowerCase();
-        if (nameWords.some(w => titleLower.includes(w))) {
-          bestMatch = { url, title, snippet };
+        if (nameWords.filter(w => w.length > 2).some(w => titleLower.includes(w))) {
+          bestMatch = { url, title, snippet: fullText.substring(0, 600) };
           break;
         }
       }
@@ -293,11 +310,17 @@ function parseGoogleSnippet(googleResult) {
 
   const title = googleResult.title || '';
   const snippet = googleResult.snippet || '';
-  const combined = `${title} ${snippet}`;
 
-  // Parse Google title: "First Last - Title at Company | LinkedIn"
-  // or "First Last - Title - Company | LinkedIn"
-  const cleanTitle = title.replace(/\s*[|·]\s*LinkedIn.*$/i, '').trim();
+  // ── Parse the h3 title ──
+  // Common formats:
+  //   "Alex Farhat - Swift Home Loans"
+  //   "John Smith - Loan Officer at UWM"
+  //   "Jane Doe - Senior MLO - Rocket Mortgage"
+  const cleanTitle = title
+    .replace(/\s*[|·]\s*LinkedIn.*$/i, '')  // strip "| LinkedIn"
+    .replace(/LinkedIn.*$/i, '')             // strip trailing "LinkedIn..."
+    .trim();
+
   const titleParts = cleanTitle.split(/\s*[-–]\s*/);
   if (titleParts.length >= 2) {
     const rest = titleParts.slice(1).join(' - ');
@@ -305,21 +328,49 @@ function parseGoogleSnippet(googleResult) {
     if (atMatch) {
       addExp(atMatch[1].trim(), atMatch[2].trim(), true);
     } else if (titleParts.length >= 3) {
-      // "Name - Title - Company" format
       addExp(titleParts[1].trim(), titleParts[2].trim(), true);
-    } else if (titleParts.length === 2 && !titleParts[1].toLowerCase().includes('linkedin')) {
-      // Could be just "Name - Company" or "Name - Title"
-      addExp(null, titleParts[1].trim(), true);
+    } else if (titleParts.length === 2) {
+      const val = titleParts[1].trim();
+      if (val && val.length > 1 && !val.toLowerCase().includes('linkedin')) {
+        addExp(null, val, true);
+      }
     }
   }
 
-  // Parse snippet: "Title at Company" pattern
-  const snippetAtMatches = snippet.matchAll(/(?:^|[.·]\s*)([^.·]+?)\s+at\s+([^.·]+?)(?:\s*[.·]|$)/gi);
-  for (const m of snippetAtMatches) {
-    addExp(m[1].trim(), m[2].trim(), true);
+  // ── Parse the full container text (snippet) ──
+  // Google's container text for LinkedIn results looks like:
+  //   "Alex Farhat - Swift Home LoansLinkedIn · Alex Farhat670+ followers
+  //    Canton, Michigan, United States · Swift Home Loans
+  //    Alex Farhat. Swift Home Loans Wayne State University..."
+  //
+  // Or for richer profiles:
+  //   "... Mortgage Loan Officer · Elite Loans
+  //    Experience: UWM · 2020 - Present · Previous: Quicken Loans..."
+
+  // "Title at Company" anywhere in text
+  const atMatches = snippet.matchAll(/([A-Z][a-zA-Z\s]+?)\s+at\s+([A-Z][a-zA-Z\s&,.]+?)(?:\.|,|·|\d|$)/g);
+  for (const m of atMatches) {
+    const t = m[1].trim();
+    const c = m[2].trim();
+    // Filter out junk matches
+    if (t.length > 2 && t.length < 60 && c.length > 2 && c.length < 80) {
+      addExp(t, c, true);
+    }
   }
 
-  // Parse "Experience:" section in snippet
+  // "· Company Name" pattern (Google shows "Location · Company" for LinkedIn)
+  const dotCompany = snippet.matchAll(/·\s+([A-Z][a-zA-Z\s&]+?)(?:\s*\d|\s*·|\s*$)/g);
+  for (const m of dotCompany) {
+    const c = m[1].trim();
+    // Filter: must look like a company name (not a location, not "followers")
+    if (c.length > 3 && c.length < 80
+        && !c.match(/United States|Michigan|California|followers|connections|Read more/i)
+        && !c.match(/^(AL|AK|AZ|AR|CA|CO|CT|DC|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY)$/)) {
+      addExp(null, c, true);
+    }
+  }
+
+  // "Experience:" section
   const expMatch = snippet.match(/Experience[:\s]+(.+?)(?:Education|Skills|$)/is);
   if (expMatch) {
     const expParts = expMatch[1].split(/[·,]\s*/);
@@ -333,7 +384,7 @@ function parseGoogleSnippet(googleResult) {
     }
   }
 
-  // Parse "Previous:" or "Previously:" pattern
+  // "Previous:" pattern
   const prevMatch = snippet.match(/Previous(?:ly)?[:\s]+(.+?)(?:\.|Education|Skills|$)/i);
   if (prevMatch) {
     const prevParts = prevMatch[1].split(/[,·]\s*/);
